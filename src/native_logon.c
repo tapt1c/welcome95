@@ -21,9 +21,44 @@ static struct {
     BOOL attached;
     BOOL unsupported;
     int count, edits, passwords;
+    BOOL layout_valid;
+    int layout_x, layout_y, layout_width;
     CONTROL_STATE children[MAX_CONTROLS];
     char name[128];
 } saved;
+
+static void diagnose(const char *reason)
+{
+    static const char *last_reason;
+    static BOOL started;
+    char path[MAX_PATH], line[256], class_name[32];
+    HANDLE file;
+    DWORD length, written;
+    int index, end;
+    if (last_reason == reason) return;
+    last_reason = reason;
+    length = GetModuleFileNameA(NULL, path, sizeof(path));
+    if (!length || length >= sizeof(path)-32) return;
+    end = (int)length;
+    while (end && path[end-1] != '\\' && path[end-1] != '/') --end;
+    lstrcpyA(path+end, "welcome95-diagnostics.txt");
+    file = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
+        started ? OPEN_ALWAYS : CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return;
+    started = TRUE; SetFilePointer(file, 0, NULL, FILE_END);
+    wsprintfA(line, "%lu: %s; controls=%d edits=%d passwords=%d\r\n",
+        GetTickCount(), reason, saved.count, saved.edits, saved.passwords);
+    WriteFile(file, line, (DWORD)lstrlenA(line), &written, NULL);
+    for (index = 0; index < saved.count; ++index) {
+        HWND child = saved.children[index].window;
+        class_name[0] = '\0'; GetClassNameA(child, class_name, sizeof(class_name));
+        wsprintfA(line, "  class=%s id=%ld style=%08lx enabled=%d visible=%d\r\n",
+            class_name, GetWindowLongA(child, GWL_ID), GetWindowLongA(child, GWL_STYLE),
+            IsWindowEnabled(child), IsWindowVisible(child));
+        WriteFile(file, line, (DWORD)lstrlenA(line), &written, NULL);
+    }
+    CloseHandle(file);
+}
 
 static BOOL same_dialog(void)
 {
@@ -86,6 +121,8 @@ BOOL native_logon_attached(void)
     return saved.attached && same_dialog();
 }
 
+BOOL native_logon_user_empty(void) { return !saved.name[0]; }
+
 const char *native_logon_name(void)
 {
     return saved.name[0] ? saved.name : "Windows user";
@@ -125,7 +162,7 @@ void native_logon_restore(BOOL reveal_original)
     if (saved.region) DeleteObject(saved.region);
     saved.region = NULL;
     saved.dialog = NULL;
-    saved.attached = FALSE;
+    saved.attached = FALSE; saved.layout_valid = FALSE;
 }
 
 BOOL native_logon_layout(int x, int y, int width)
@@ -137,6 +174,12 @@ BOOL native_logon_layout(int x, int y, int width)
     if (!native_logon_attached() || width < 160) return FALSE;
     gap = MulDiv(60, GetSystemMetrics(SM_CXSCREEN), 800);
     height = MulDiv(22, GetSystemMetrics(SM_CYSCREEN), 600);
+    if (saved.layout_valid && saved.layout_x == x && saved.layout_y == y && saved.layout_width == width &&
+        GetWindowRect(saved.dialog, &rectangle) && rectangle.left == x && rectangle.top == y &&
+        rectangle.right-rectangle.left == width &&
+        !(GetWindowLongA(saved.dialog, GWL_STYLE) & (WS_CAPTION | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME)))
+        return TRUE;
+
     set_style(saved.dialog, GWL_STYLE, GetWindowLongA(saved.dialog, GWL_STYLE) &
         ~(WS_CAPTION | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | WS_SYSMENU | DS_MODALFRAME));
     for (index = 0; index < saved.count; ++index) {
@@ -159,6 +202,7 @@ BOOL native_logon_layout(int x, int y, int width)
     if (!SetWindowRgn(saved.dialog, region, TRUE)) {
         DeleteObject(region); return FALSE;
     }
+    saved.layout_valid = TRUE; saved.layout_x = x; saved.layout_y = y; saved.layout_width = width;
     return TRUE;
 }
 
@@ -183,9 +227,9 @@ BOOL native_logon_set_user(const char *name)
         !IsWindowEnabled(saved.dialog)) return FALSE;
     /* Clear the previous account's input before changing the native username. */
     if (!SendMessageTimeoutA(saved.password, WM_SETTEXT, 0, (LPARAM)"",
-        SMTO_ABORTIFHUNG | SMTO_BLOCK, 200, &result) || !result) return FALSE;
+        SMTO_ABORTIFHUNG, 200, &result) || !result) return FALSE;
     if (!SendMessageTimeoutA(saved.username, WM_SETTEXT, 0, (LPARAM)name,
-        SMTO_ABORTIFHUNG | SMTO_BLOCK, 200, &result) || !result) return FALSE;
+        SMTO_ABORTIFHUNG, 200, &result) || !result) return FALSE;
     lstrcpynA(saved.name, name, sizeof(saved.name));
     native_logon_focus();
     return TRUE;
@@ -203,19 +247,17 @@ BOOL native_logon_attach(HWND dialog, int x, int y, int width)
     saved.password = NULL; saved.username = NULL; saved.submit = NULL;
     GetWindowThreadProcessId(dialog, &saved.process);
     saved.visible = IsWindowVisible(dialog);
-    if (!saved.visible || !IsWindowEnabled(dialog) || !GetWindowRect(dialog, &saved.rectangle)) return FALSE;
+    if (!saved.visible || !IsWindowEnabled(dialog) || !GetWindowRect(dialog, &saved.rectangle)) { diagnose("dialog not ready"); return FALSE; }
     EnumChildWindows(dialog, capture_control, 0);
     if (saved.unsupported || saved.edits != 2 || saved.passwords != 1 ||
         !saved.username || !saved.submit || !IsWindowVisible(saved.password) ||
-        !IsWindowVisible(saved.submit) || !IsWindowEnabled(saved.password) || !IsWindowEnabled(saved.submit))
-        return FALSE;
+        !IsWindowVisible(saved.submit)) { diagnose("unrecognized controls"); return FALSE; }
     /* Only the non-password username field is read. A hung provider cannot block
        the welcome thread indefinitely. Password text never enters our process. */
     if (!SendMessageTimeoutA(saved.username, WM_GETTEXT, sizeof(saved.name), (LPARAM)saved.name,
-                             SMTO_ABORTIFHUNG | SMTO_BLOCK, 200, &result)) saved.name[0] = '\0';
+                             SMTO_ABORTIFHUNG, 200, &result)) saved.name[0] = '\0';
     saved.name[sizeof(saved.name) - 1] = '\0';
-    /* With no remembered account the original username entry is still needed. */
-    if (!saved.name[0]) return FALSE;
+    /* An empty username is valid: the user can select a known profile. */
     saved.style = GetWindowLongA(dialog, GWL_STYLE);
     saved.exstyle = GetWindowLongA(dialog, GWL_EXSTYLE);
     saved.region = CreateRectRgn(0, 0, 0, 0);
@@ -227,7 +269,7 @@ BOOL native_logon_attach(HWND dialog, int x, int y, int width)
                              WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | DS_MODALFRAME);
     exstyle = saved.exstyle & ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_STATICEDGE);
     if (!set_style(dialog, GWL_STYLE, style) || !set_style(dialog, GWL_EXSTYLE, exstyle)) {
-        native_logon_restore(TRUE); return FALSE;
+        diagnose("cannot change dialog styles"); native_logon_restore(TRUE); return FALSE;
     }
     for (index = 0; index < saved.count; ++index) {
         HWND child = saved.children[index].window;
@@ -238,9 +280,10 @@ BOOL native_logon_attach(HWND dialog, int x, int y, int width)
     set_style(saved.password, GWL_STYLE, GetWindowLongA(saved.password, GWL_STYLE) & ~WS_BORDER);
     set_style(saved.password, GWL_EXSTYLE, GetWindowLongA(saved.password, GWL_EXSTYLE) & ~WS_EX_CLIENTEDGE);
     if (!native_logon_layout(x, y, width)) {
-        native_logon_restore(TRUE); return FALSE;
+        diagnose("cannot place password field"); native_logon_restore(TRUE); return FALSE;
     }
     ShowWindow(dialog, SW_SHOWNA);
+    diagnose("attached");
     native_logon_focus();
     return TRUE;
 }

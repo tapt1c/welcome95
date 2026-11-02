@@ -96,8 +96,9 @@ void test_entry(void)
     check(IsWindowVisible(username) && (GetWindowLongA(dialog, GWL_STYLE) & WS_CAPTION),
           "failed layout rolls back to accessible native controls");
     SetWindowTextA(username, "");
-    check(!native_logon_attach(dialog, 345, 250, 260) && IsWindowVisible(username),
-          "an empty account stays editable in the standard dialog");
+    check(native_logon_attach(dialog, 345, 250, 260), "attach when the initial native username is blank");
+    check(native_logon_set_user("Daniel"), "select a known account after blank-name startup");
+    native_logon_restore(FALSE);
     SetWindowTextA(username, "Daniel");
     extra = CreateWindowA("COMBOBOX", "", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
         20, 85, 120, 100, dialog, (HMENU)1004, instance, NULL);

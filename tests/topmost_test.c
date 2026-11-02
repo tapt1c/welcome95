@@ -60,6 +60,11 @@ void topmost_test_entry(void)
     maintain_topmost(canvas);
     test_check(above(canvas, competitor) && above(popup, canvas), "Windows logon error stays accessible above the canvas");
     test_check(GetForegroundWindow() == foreground, "restoring priority preserves error-dialog focus");
+    profiles_remember("First"); profiles_remember("Second");
+    selected_profile = 0; profile_page = 0; pending_profile = FALSE; preview = FALSE;
+    welcome_proc(canvas, WM_LBUTTONDOWN, 0, MAKELPARAM(sx(440), sy(profile_top(1)+10)));
+    test_check(selected_profile == 1 && pending_profile,
+        "account click queues selection even when native attachment is unavailable");
     DestroyWindow(popup);
     DestroyWindow(login_window); login_window = NULL;
     DestroyWindow(competitor);

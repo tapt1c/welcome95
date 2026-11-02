@@ -31,6 +31,8 @@ static HWND login_window;
 static BOOL login_was_topmost;
 static BOOL prefer_native;
 static int selected_profile, profile_page;
+static BOOL pending_profile, servicing_logon;
+static DWORD next_logon_attempt, next_profile_attempt;
 static BOOL escape_hotkey, close_hotkey;
 static char exe_path[MAX_PATH];
 
@@ -256,7 +258,7 @@ static void paint_welcome(HWND hwnd)
             profiles_name(index), rectangle, DT_LEFT | DT_SINGLELINE);
         if (index == selected_profile) {
             SetRect(&rectangle, sx(499), sy(top+35), sx(765), sy(top+50));
-            label(dc, small_font, preview ? "Preview" : (native_logon_attached() ? "Type your password." : "Preparing sign-in..."), rectangle, DT_LEFT | DT_SINGLELINE);
+            label(dc, small_font, preview ? "Preview" : (pending_profile ? "Switching user..." : (native_logon_attached() ? "Type your password." : "Preparing sign-in...")), rectangle, DT_LEFT | DT_SINGLELINE);
             SetRect(&rectangle, sx(499), sy(top+50), sx(670), sy(top+76));
             rounded(dc, rectangle, RGB(255,255,255), RGB(49,81,181));
         }
@@ -338,6 +340,8 @@ static void allow_logon(void)
         if (prefer_native) return;
         /* Retry while the provider is still initializing its controls. */
     }
+    if ((LONG)(GetTickCount() - next_logon_attempt) < 0) return;
+    next_logon_attempt = GetTickCount() + 1000;
     release_logon();
     EnumWindows(find_logon, (LPARAM)&found);
     if (!found) return;
@@ -345,14 +349,25 @@ static void allow_logon(void)
     login_was_topmost = (GetWindowLongA(found, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
     login_geometry(&x, &y, &width);
     if (!prefer_native && native_logon_attach(found, x, y, width)) {
-        selected_profile = profiles_remember(native_logon_name());
-        if (selected_profile < 0) selected_profile = 0;
-        profile_page = selected_profile / 4;
+        if (native_logon_user_empty() && !profiles_count()) {
+            native_logon_restore(TRUE);
+            ShowWindow(GetDlgItem(screen, ID_NATIVE), SW_SHOWNA);
+            return;
+        }
+        if (!pending_profile) {
+            if (native_logon_user_empty() && profiles_count()) {
+                selected_profile = 0; pending_profile = TRUE;
+            } else {
+                selected_profile = profiles_remember(native_logon_name());
+                if (selected_profile < 0) selected_profile = 0;
+            }
+            profile_page = selected_profile / 4;
+        }
         ShowWindow(GetDlgItem(screen, ID_PREV), profiles_count()>4 ? SW_SHOWNA : SW_HIDE);
         ShowWindow(GetDlgItem(screen, ID_NEXT), profiles_count()>4 ? SW_SHOWNA : SW_HIDE);
         login_geometry(&x, &y, &width); native_logon_layout(x, y, width);
         position_arrow(screen);
-        EnableWindow(GetDlgItem(screen, ID_SUBMIT), TRUE);
+        EnableWindow(GetDlgItem(screen, ID_SUBMIT), !pending_profile);
         InvalidateRect(screen, NULL, FALSE);
         return;
     }
@@ -388,6 +403,7 @@ static void maintain_topmost(HWND hwnd)
 static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp)
 {
     int x, y, width, index;
+    char requested_name[128];
     switch (message) {
     case WM_CREATE:
         SetTimer(hwnd, TICK, 100, NULL);
@@ -427,36 +443,31 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
         if (wp == VK_ESCAPE || wp == VK_F4) return 0;
-        if (wp == VK_RETURN) { native_logon_submit(); return 0; }
+        if (wp == VK_RETURN) { if (!pending_profile) native_logon_submit(); return 0; }
         break;
     case WM_LBUTTONDOWN:
         x = LOWORD(lp); y = HIWORD(lp);
         for (index = profile_page*4; index < profile_page*4 + visible_profiles(); ++index) {
             if (x >= sx(425) && x < sx(775) && y >= sy(profile_top(index)) && y < sy(profile_top(index)+64) &&
-                index != selected_profile && (preview || native_logon_set_user(profiles_name(index)))) {
-                selected_profile = index;
-                login_geometry(&x, &y, &width);
-                if (preview) SetWindowPos(GetDlgItem(hwnd, 201), NULL, x, y, width-sx(60), sy(22), SWP_NOZORDER | SWP_NOACTIVATE);
-                else native_logon_layout(x, y, width);
-                position_arrow(hwnd); InvalidateRect(hwnd, NULL, FALSE); break;
+                index != selected_profile) {
+                selected_profile = index; pending_profile = !preview; next_profile_attempt = 0;
+                position_arrow(hwnd); EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), preview);
+                InvalidateRect(hwnd, NULL, FALSE); break;
             }
         }
-        native_logon_focus(); return 0;
+        return 0;
     case WM_COMMAND:
         if (LOWORD(wp) == ID_PREV || LOWORD(wp) == ID_NEXT) {
             index = profile_page + (LOWORD(wp) == ID_NEXT ? 1 : -1);
-            if (index >= 0 && index*4 < profiles_count() &&
-                (preview || native_logon_set_user(profiles_name(index*4)))) {
-                profile_page = index; selected_profile = index*4;
-                login_geometry(&x, &y, &width);
-                if (preview) SetWindowPos(GetDlgItem(hwnd, 201), NULL, x, y, width-sx(60), sy(22), SWP_NOZORDER | SWP_NOACTIVATE);
-                else native_logon_layout(x, y, width);
-                position_arrow(hwnd); InvalidateRect(hwnd, NULL, FALSE);
+            if (index >= 0 && index*4 < profiles_count()) {
+                profile_page = index; selected_profile = index*4; pending_profile = !preview; next_profile_attempt = 0;
+                position_arrow(hwnd); EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), preview);
+                InvalidateRect(hwnd, NULL, FALSE);
             }
         }
         if (LOWORD(wp) == ID_SUBMIT) {
             if (preview) { finishing = TRUE; finish_time = GetTickCount(); }
-            else native_logon_submit();
+            else if (!pending_profile) native_logon_submit();
         }
         if (LOWORD(wp) == ID_POWER && !preview && MessageBoxA(hwnd, "Turn off this computer?", APP, MB_YESNO | MB_ICONQUESTION) == IDYES)
             ExitWindowsEx(EWX_SHUTDOWN, 0);
@@ -481,8 +492,23 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if (finishing && (DWORD)(GetTickCount() - finish_time) >= 1000) {
             DestroyWindow(hwnd); return 0;
         }
+        if (servicing_logon) return 0;
+        servicing_logon = TRUE;
         allow_logon();
+        if (pending_profile && native_logon_attached() && (LONG)(GetTickCount()-next_profile_attempt) >= 0) {
+            next_profile_attempt = GetTickCount() + 1000;
+            index = selected_profile;
+            lstrcpynA(requested_name, profiles_name(index), sizeof(requested_name));
+            if (native_logon_set_user(requested_name) && selected_profile == index) {
+                pending_profile = FALSE;
+                login_geometry(&x, &y, &width);
+                native_logon_layout(x, y, width);
+                EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), TRUE);
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
+        }
         maintain_topmost(hwnd);
+        servicing_logon = FALSE;
         return 0;
     case WM_DISPLAYCHANGE:
         SetWindowPos(hwnd, NULL, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), SWP_NOZORDER | SWP_NOACTIVATE);
