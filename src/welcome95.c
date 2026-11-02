@@ -1,5 +1,6 @@
 /* Welcome95: ANSI Win32 only, no Unicode/NT-only APIs. */
 #include <windows.h>
+#include "native_logon.h"
 
 #define APP "Welcome95"
 #define REG_SERVICE "Software\\Microsoft\\Windows\\CurrentVersion\\RunServices"
@@ -12,6 +13,7 @@
 #define ID_PREVIEW 103
 #define ID_DONE 104
 #define ID_EXIT 105
+#define ID_NATIVE 106
 #define TICK 1
 
 static HINSTANCE instance;
@@ -22,7 +24,17 @@ static BOOL preview, finishing;
 static DWORD finish_time;
 static HWND login_window;
 static BOOL login_was_topmost;
+static BOOL prefer_native;
+static BOOL escape_hotkey, close_hotkey;
 static char exe_path[MAX_PATH];
+
+static void login_geometry(int *x, int *y, int *width)
+{
+    int screen_width = GetSystemMetrics(SM_CXSCREEN);
+    *x = screen_width / 2 + 30;
+    *y = GetSystemMetrics(SM_CYSCREEN) / 2 + 18;
+    *width = screen_width - *x - 25;
+}
 
 static void zero_memory(void *memory, unsigned int size)
 {
@@ -217,11 +229,20 @@ static void paint_welcome(HWND hwnd)
     label(dc, body_font, "Welcome", rectangle, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     SetRect(&rectangle, middle + 30, top + 30, width - 25, top + 100);
     label(dc, body_font, finishing ? "Starting your session..." : "Sign in to Windows", rectangle, DT_LEFT | DT_WORDBREAK);
-    SetRect(&rectangle, middle + 30, top + 105, width - 25, top + 175);
-    label(dc, small_font, preview ? "Preview only. No startup settings changed." :
-          "Use the standard Windows logon dialog.\nYour password stays with Windows.", rectangle, DT_LEFT | DT_WORDBREAK);
-    SetRect(&rectangle, 25, bottom + 15, width - 25, height - 8);
-    label(dc, small_font, preview ? "Welcome95 preview" : "Welcome95  |  Please wait for Windows logon", rectangle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    if (preview || native_logon_attached()) {
+        SetRect(&rectangle, middle + 30, height / 2 - 65, width - 25, height / 2 - 25);
+        label(dc, body_font, preview ? "Windows user" : native_logon_name(), rectangle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SetRect(&rectangle, middle + 30, height / 2 - 12, width - 25, height / 2 + 15);
+        label(dc, small_font, "Password", rectangle, DT_LEFT | DT_SINGLELINE);
+        SetRect(&rectangle, middle + 30, height / 2 + 58, width - 25, height / 2 + 105);
+        label(dc, small_font, preview ? "Preview only. No password is accepted." : "Press Enter or click OK to sign in.", rectangle, DT_LEFT | DT_WORDBREAK);
+    } else {
+        SetRect(&rectangle, middle + 30, top + 105, width - 25, top + 175);
+        label(dc, small_font, login_window ? "Use the Windows logon dialog." :
+              "Waiting for Windows logon...", rectangle, DT_LEFT | DT_WORDBREAK);
+    }
+    SetRect(&rectangle, 25, bottom + 15, width - 200, height - 8);
+    label(dc, small_font, preview ? "Welcome95 preview" : "Welcome95", rectangle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     EndPaint(hwnd, &paint);
 }
 
@@ -254,16 +275,18 @@ static BOOL CALLBACK find_logon(HWND hwnd, LPARAM parameter)
 
 static void release_logon(void)
 {
+    native_logon_restore(FALSE);
     if (login_window && IsWindow(login_window) && !login_was_topmost)
         SetWindowPos(login_window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     login_window = NULL;
+    if (screen) ShowWindow(GetDlgItem(screen, ID_NATIVE), SW_HIDE);
 }
 
 static void allow_logon(void)
 {
     HWND found = NULL;
     RECT area;
-    int x, y;
+    int x, y, width;
     if (preview || finishing) return;
     if (login_window && IsWindow(login_window) && IsWindowVisible(login_window)) return;
     release_logon();
@@ -271,6 +294,13 @@ static void allow_logon(void)
     if (!found) return;
     login_window = found;
     login_was_topmost = (GetWindowLongA(found, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    login_geometry(&x, &y, &width);
+    if (!prefer_native && escape_hotkey && close_hotkey && native_logon_attach(found, x, y, width)) {
+        ShowWindow(GetDlgItem(screen, ID_NATIVE), SW_SHOWNA);
+        InvalidateRect(screen, NULL, FALSE);
+        return;
+    }
+    /* An unknown provider must keep its required controls accessible. */
     GetWindowRect(found, &area);
     x = GetSystemMetrics(SM_CXSCREEN) * 3 / 4 - (area.right - area.left) / 2;
     y = GetSystemMetrics(SM_CYSCREEN) / 2 - (area.bottom - area.top) / 2;
@@ -280,33 +310,70 @@ static void allow_logon(void)
     if (y < 0) y = 0;
     SetWindowPos(found, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
     SetForegroundWindow(found);
+    InvalidateRect(screen, NULL, FALSE);
+}
+
+static void maintain_topmost(HWND hwnd)
+{
+    HWND popup;
+    UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
+    if (!login_window || !IsWindow(login_window) || !IsWindowVisible(login_window)) return;
+    /* Keep the actual password controls above our own canvas. Owned error
+       messages are the sole intentional exception to the welcome's priority. */
+    SetWindowPos(login_window, HWND_TOPMOST, 0, 0, 0, 0, flags);
+    popup = GetLastActivePopup(login_window);
+    if (popup != login_window && IsWindowVisible(popup))
+        SetWindowPos(popup, HWND_TOPMOST, 0, 0, 0, 0, flags);
 }
 
 static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp)
 {
+    int x, y, width;
     switch (message) {
     case WM_CREATE:
         SetTimer(hwnd, TICK, 100, NULL);
+        escape_hotkey = RegisterHotKey(hwnd, 1, 0, VK_ESCAPE);
+        close_hotkey = RegisterHotKey(hwnd, 2, MOD_ALT, VK_F4);
+        CreateWindowA("BUTTON", "Windows dialog", WS_CHILD | BS_PUSHBUTTON,
+            GetSystemMetrics(SM_CXSCREEN) - 180, GetSystemMetrics(SM_CYSCREEN) * 7 / 8 + 15,
+            160, 28, hwnd, (HMENU)ID_NATIVE, instance, NULL);
+        SendDlgItemMessageA(hwnd, ID_NATIVE, WM_SETFONT, (WPARAM)small_font, TRUE);
         if (preview) {
+            login_geometry(&x, &y, &width);
+            CreateWindowA("EDIT", "", WS_CHILD | WS_VISIBLE | WS_DISABLED | WS_BORDER | ES_PASSWORD,
+                x, y, width - 60, 30, hwnd, (HMENU)201, instance, NULL);
+            /* A disabled preview edit never accepts a real password. */
+            {
             HWND button = CreateWindowA("BUTTON", "Finish preview", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                GetSystemMetrics(SM_CXSCREEN) / 2 + 30, GetSystemMetrics(SM_CYSCREEN) / 2 + 50,
-                150, 30, hwnd, (HMENU)ID_DONE, instance, NULL);
+                x, y + 110, 150, 30, hwnd, (HMENU)ID_DONE, instance, NULL);
             SendMessageA(button, WM_SETFONT, (WPARAM)small_font, TRUE);
+            }
         }
         return 0;
     case WM_PAINT: paint_welcome(hwnd); return 0;
     case WM_ERASEBKGND: return 1;
     case WM_CLOSE: return 0;
+    case WM_HOTKEY: return 0;
     case WM_SYSCOMMAND:
         if ((wp & 0xfff0) == SC_CLOSE || (wp & 0xfff0) == SC_MINIMIZE) return 0;
         break;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
         if (wp == VK_ESCAPE || wp == VK_F4) return 0;
+        if (wp == VK_RETURN) { native_logon_submit(); return 0; }
         break;
+    case WM_LBUTTONDOWN: native_logon_focus(); return 0;
     case WM_COMMAND:
         if (preview && LOWORD(wp) == ID_DONE && !finishing) {
             finishing = TRUE; finish_time = GetTickCount(); InvalidateRect(hwnd, NULL, FALSE);
+        }
+        if (LOWORD(wp) == ID_NATIVE && native_logon_attached()) {
+            prefer_native = TRUE;
+            native_logon_restore(TRUE);
+            ShowWindow(GetDlgItem(hwnd, ID_NATIVE), SW_HIDE);
+            SetForegroundWindow(login_window);
+            InvalidateRect(hwnd, NULL, FALSE);
         }
         return 0;
     case WM_TIMER:
@@ -320,12 +387,27 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             DestroyWindow(hwnd); return 0;
         }
         allow_logon();
+        maintain_topmost(hwnd);
         return 0;
     case WM_DISPLAYCHANGE:
         SetWindowPos(hwnd, NULL, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), SWP_NOZORDER | SWP_NOACTIVATE);
+        login_geometry(&x, &y, &width);
+        if (native_logon_attached() && !native_logon_layout(x, y, width)) {
+            prefer_native = TRUE;
+            native_logon_restore(TRUE);
+            ShowWindow(GetDlgItem(hwnd, ID_NATIVE), SW_HIDE);
+        }
+        SetWindowPos(GetDlgItem(hwnd, ID_NATIVE), NULL, GetSystemMetrics(SM_CXSCREEN) - 180,
+            GetSystemMetrics(SM_CYSCREEN) * 7 / 8 + 15, 160, 28, SWP_NOZORDER | SWP_NOACTIVATE);
+        if (preview) {
+            SetWindowPos(GetDlgItem(hwnd, 201), NULL, x, y, width - 60, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(GetDlgItem(hwnd, ID_DONE), NULL, x, y + 110, 150, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
     case WM_DESTROY:
+        if (escape_hotkey) UnregisterHotKey(hwnd, 1);
+        if (close_hotkey) UnregisterHotKey(hwnd, 2);
         KillTimer(hwnd, TICK); release_logon(); PostQuitMessage(0); return 0;
     }
     return DefWindowProcA(hwnd, message, wp, lp);

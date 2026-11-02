@@ -46,9 +46,9 @@ def check(path):
     # Deliberately small, reviewed Win95 API surface. A new import requires review.
     allowed = {
         'ADVAPI32.dll': set('RegCloseKey RegCreateKeyExA RegDeleteValueA RegOpenKeyExA RegQueryValueExA RegSetValueExA'.split()),
-        'GDI32.dll': set('CreateFontA CreateSolidBrush DeleteObject SelectObject SetBkMode SetTextColor'.split()),
-        'KERNEL32.dll': set('CloseHandle CreateEventA CreateProcessA ExitProcess GetCommandLineA GetCurrentProcessId GetLastError GetModuleFileNameA GetModuleHandleA GetTickCount GetVersion OpenEventA SetEvent Sleep WaitForSingleObject lstrcmpA lstrcmpiA lstrlenA'.split()),
-        'USER32.dll': set('BeginPaint CreateWindowExA DefWindowProcA DestroyWindow DispatchMessageA DrawTextA EndPaint EnumChildWindows EnumWindows FillRect GetClassNameA GetClientRect GetMessageA GetSystemMetrics GetWindowLongA GetWindowRect GetWindowThreadProcessId InvalidateRect IsDialogMessageA IsWindow IsWindowVisible KillTimer LoadCursorA MessageBoxA PostQuitMessage RegisterClassA SendMessageA SetDlgItemTextA SetForegroundWindow SetRect SetTimer SetWindowPos ShowWindow TranslateMessage UpdateWindow wsprintfA'.split()),
+        'GDI32.dll': set('CombineRgn CreateRectRgn CreateFontA CreateSolidBrush DeleteObject SelectObject SetBkMode SetTextColor'.split()),
+        'KERNEL32.dll': set('CloseHandle CreateEventA CreateProcessA ExitProcess GetCommandLineA GetCurrentProcessId GetLastError GetModuleFileNameA GetModuleHandleA GetTickCount GetVersion OpenEventA SetEvent SetLastError Sleep WaitForSingleObject lstrcmpA lstrcmpiA lstrlenA'.split()),
+        'USER32.dll': set('BeginPaint ClientToScreen CreateWindowExA DefWindowProcA DestroyWindow DispatchMessageA DrawTextA EnableWindow EndPaint EnumChildWindows EnumWindows FillRect GetClassNameA GetClientRect GetDlgItem GetLastActivePopup GetMessageA GetParent GetSystemMetrics GetWindowLongA GetWindowRect GetWindowRgn GetWindowThreadProcessId InvalidateRect IsDialogMessageA IsWindow IsWindowEnabled IsWindowVisible KillTimer LoadCursorA MapWindowPoints MessageBoxA PostMessageA PostQuitMessage RegisterClassA RegisterHotKey SendDlgItemMessageA SendMessageA SendMessageTimeoutA SetDlgItemTextA SetForegroundWindow SetRect SetTimer SetWindowLongA SetWindowPos SetWindowRgn ShowWindow TranslateMessage UnregisterHotKey UpdateWindow wsprintfA'.split()),
     }
     imports = {}
     descriptor = offset(u32(optional + 104))

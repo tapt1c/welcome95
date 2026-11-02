@@ -1,3 +1,6 @@
-build/
+/build/*
+!/build/welcome95.exe
 *.o
 __pycache__/
+/native-logon-test.log
+/topmost-test.log
