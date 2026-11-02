@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Audit the actual PE image, including imports; this is not a runtime test."""
+import pathlib
+import struct
+import sys
+
+
+def check(path):
+    data = pathlib.Path(path).read_bytes()
+
+    def u16(offset):
+        return struct.unpack_from('<H', data, offset)[0]
+
+    def u32(offset):
+        return struct.unpack_from('<I', data, offset)[0]
+
+    def require(condition, message):
+        if not condition:
+            raise ValueError(message)
+
+    require(data[:2] == b'MZ', 'DOS signature missing')
+    pe = u32(0x3c)
+    require(data[pe:pe + 4] == b'PE\0\0', 'PE signature missing')
+    require(u16(pe + 4) == 0x14c, 'Must target x86, not x64')
+    optional = pe + 24
+    require(u16(optional) == 0x10b, 'Must be PE32')
+    require((u16(optional + 40), u16(optional + 42)) <= (4, 0), 'OS requirement exceeds Windows 95')
+    require((u16(optional + 48), u16(optional + 50)) <= (4, 0), 'Subsystem requirement exceeds Windows 95')
+    require(u16(optional + 68) == 2, 'Must be a GUI executable')
+    require(u32(optional + 16) != 0, 'No entry point')
+    section_table = optional + u16(pe + 20)
+    sections = []
+    for index in range(u16(pe + 6)):
+        at = section_table + index * 40
+        sections.append((u32(at + 12), max(u32(at + 8), u32(at + 16)), u32(at + 20)))
+
+    def offset(rva):
+        for start, size, raw in sections:
+            if start <= rva < start + size:
+                return raw + rva - start
+        raise ValueError(f'Unmapped RVA {rva:x}')
+
+    def string(at):
+        return data[at:data.index(b'\0', at)].decode('ascii')
+
+    # Deliberately small, reviewed Win95 API surface. A new import requires review.
+    allowed = {
+        'ADVAPI32.dll': set('RegCloseKey RegCreateKeyExA RegDeleteValueA RegOpenKeyExA RegQueryValueExA RegSetValueExA'.split()),
+        'GDI32.dll': set('CreateFontA CreateSolidBrush DeleteObject SelectObject SetBkMode SetTextColor'.split()),
+        'KERNEL32.dll': set('CloseHandle CreateEventA CreateProcessA ExitProcess GetCommandLineA GetCurrentProcessId GetLastError GetModuleFileNameA GetModuleHandleA GetTickCount GetVersion OpenEventA SetEvent Sleep WaitForSingleObject lstrcmpA lstrcmpiA lstrlenA'.split()),
+        'USER32.dll': set('BeginPaint CreateWindowExA DefWindowProcA DestroyWindow DispatchMessageA DrawTextA EndPaint EnumChildWindows EnumWindows FillRect GetClassNameA GetClientRect GetMessageA GetSystemMetrics GetWindowLongA GetWindowRect GetWindowThreadProcessId InvalidateRect IsDialogMessageA IsWindow IsWindowVisible KillTimer LoadCursorA MessageBoxA PostQuitMessage RegisterClassA SendMessageA SetDlgItemTextA SetForegroundWindow SetRect SetTimer SetWindowPos ShowWindow TranslateMessage UpdateWindow wsprintfA'.split()),
+    }
+    imports = {}
+    descriptor = offset(u32(optional + 104))
+    while any(data[descriptor:descriptor + 20]):
+        lookup, _, _, name_rva, address = struct.unpack_from('<5I', data, descriptor)
+        name = string(offset(name_rva))
+        require(name in allowed, f'Unsupported DLL dependency: {name}')
+        thunk = offset(lookup or address)
+        functions = []
+        while u32(thunk):
+            entry = u32(thunk)
+            require(not entry & 0x80000000, f'Unreviewed ordinal import in {name}')
+            function = string(offset(entry) + 2)
+            require(function in allowed[name], f'Unreviewed import: {name}!{function}')
+            functions.append(function)
+            thunk += 4
+        imports[name] = functions
+        descriptor += 20
+    require(len(imports) == 4, 'Unexpected or missing system DLLs')
+    require(u32(optional + 96 + 9 * 8) == 0, 'Unexpected TLS/CRT initialization')
+    require(u32(optional + 96 + 14 * 8) == 0, '.NET is not supported')
+    print(f'PASS: {path}: x86 GUI, Windows 4.0, {len(imports)} system DLLs, '
+          f'{sum(map(len, imports.values()))} reviewed imports, no CRT/.NET/TLS')
+
+
+if __name__ == '__main__':
+    try:
+        check(sys.argv[1] if len(sys.argv) > 1 else 'build/welcome95.exe')
+    except (ValueError, OSError, struct.error, IndexError) as error:
+        sys.exit(f'FAIL: {error}')
