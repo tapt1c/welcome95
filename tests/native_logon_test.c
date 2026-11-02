@@ -66,18 +66,23 @@ void test_entry(void)
     check(!lstrcmpA(native_logon_name(), "Daniel"), "display the remembered username");
     GetWindowTextA(password, text, sizeof(text));
     check(!lstrcmpA(text, "synthetic-test-only"), "existing synthetic input is preserved");
-    check(IsWindowVisible(password) && IsWindowVisible(submit), "native password and OK remain visible");
+    check(IsWindowVisible(password) && !IsWindowVisible(submit), "native password is visible and the original OK is hidden");
     check(!IsWindowVisible(username) && !IsWindowVisible(cancel), "original account edit and Cancel are hidden");
     check(!IsWindowEnabled(cancel), "hidden Cancel is disabled");
     check(!(GetWindowLongA(dialog, GWL_STYLE) & WS_CAPTION), "native title bar is removed");
     region = CreateRectRgn(0, 0, 0, 0);
     check(GetWindowRgn(dialog, region) != ERROR, "native dialog has an explicit clipping region");
-    check(PtInRegion(region, 10, 10) && PtInRegion(region, 250, 10) && !PtInRegion(region, 204, 10),
-          "only the password and OK rectangles are exposed, including click-through gap");
+    check(PtInRegion(region, 10, 10) && !PtInRegion(region, 250, 10) && !PtInRegion(region, 204, 10),
+          "only the actual password field is exposed; all native dialog chrome is clipped");
     check(native_logon_layout(320, 280, 280), "relayout after screen geometry changes");
     GetWindowRect(dialog, &rectangle);
     check(rectangle.left == 320 && rectangle.top == 280 && rectangle.right - rectangle.left == 280,
           "native controls follow requested welcome coordinates");
+    check(native_logon_set_user("Alex"), "select another account through the native username field");
+    GetWindowTextA(username, text, sizeof(text));
+    check(!lstrcmpA(text, "Alex"), "Windows receives the selected account name");
+    GetWindowTextA(password, text, sizeof(text));
+    check(!text[0], "switching accounts clears the previous synthetic password");
     native_logon_restore(FALSE);
     GetWindowRect(dialog, &rectangle);
     check(EqualRect(&rectangle, &original), "restore the original dialog rectangle");

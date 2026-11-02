@@ -9,4 +9,6 @@ else
     echo 'Install the i686 MinGW-w64 compiler (see README.md).' >&2
     exit 1
 fi
-make CC="$compiler" "$@"
+resource_compiler="$(dirname "$compiler")/i686-w64-mingw32-windres"
+if command -v i686-w64-mingw32-windres >/dev/null 2>&1; then resource_compiler=i686-w64-mingw32-windres; fi
+make CC="$compiler" WINDRES="$resource_compiler" "$@"

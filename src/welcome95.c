@@ -1,6 +1,7 @@
 /* Welcome95: ANSI Win32 only, no Unicode/NT-only APIs. */
 #include <windows.h>
 #include "native_logon.h"
+#include "profiles.h"
 
 #define APP "Welcome95"
 #define REG_SERVICE "Software\\Microsoft\\Windows\\CurrentVersion\\RunServices"
@@ -14,6 +15,10 @@
 #define ID_DONE 104
 #define ID_EXIT 105
 #define ID_NATIVE 106
+#define ID_SUBMIT 107
+#define ID_POWER 108
+#define ID_PREV 109
+#define ID_NEXT 110
 #define TICK 1
 
 static HINSTANCE instance;
@@ -25,15 +30,33 @@ static DWORD finish_time;
 static HWND login_window;
 static BOOL login_was_topmost;
 static BOOL prefer_native;
+static int selected_profile, profile_page;
 static BOOL escape_hotkey, close_hotkey;
 static char exe_path[MAX_PATH];
 
+static int sx(int value) { return MulDiv(value, GetSystemMetrics(SM_CXSCREEN), 800); }
+static int sy(int value) { return MulDiv(value, GetSystemMetrics(SM_CYSCREEN), 600); }
+
+static int visible_profiles(void)
+{
+    int total = profiles_count() ? profiles_count() : 1;
+    int remaining = total - profile_page * 4;
+    return remaining < 4 ? remaining : 4;
+}
+static int profile_top(int index)
+{
+    int slot = index - profile_page * 4;
+    return 291 - (visible_profiles() * 72 + 8) / 2 + slot * 72 +
+        (index > selected_profile && selected_profile / 4 == profile_page ? 8 : 0);
+}
 static void login_geometry(int *x, int *y, int *width)
 {
-    int screen_width = GetSystemMetrics(SM_CXSCREEN);
-    *x = screen_width / 2 + 30;
-    *y = GetSystemMetrics(SM_CYSCREEN) / 2 + 18;
-    *width = screen_width - *x - 25;
+    *x = sx(501); *y = sy(profile_top(selected_profile) + 52); *width = sx(227);
+}
+static void position_arrow(HWND hwnd)
+{
+    SetWindowPos(GetDlgItem(hwnd, ID_SUBMIT), NULL, sx(685), sy(profile_top(selected_profile) + 51),
+        sx(26), sy(26), SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 static void zero_memory(void *memory, unsigned int size)
@@ -171,29 +194,28 @@ static void label(HDC dc, HFONT font, const char *text, RECT rectangle, UINT fla
     SelectObject(dc, old);
 }
 
-static void flag(HDC dc, int x, int y)
+static void bitmap(HDC dc, int id, int x, int y, int width, int height)
 {
-    RECT rectangle;
-    int row, column;
-    COLORREF colors[4];
-    colors[0] = RGB(235, 65, 40); colors[1] = RGB(60, 177, 72);
-    colors[2] = RGB(48, 112, 218); colors[3] = RGB(250, 207, 42);
-    SetRect(&rectangle, x - 3, y - 3, x + 61, y + 61);
-    fill(dc, rectangle, RGB(24, 35, 67));
-    for (row = 0; row < 2; ++row) {
-        for (column = 0; column < 2; ++column) {
-            SetRect(&rectangle, x + column * 31, y + row * 31,
-                    x + column * 31 + 27, y + row * 31 + 27);
-            fill(dc, rectangle, colors[row * 2 + column]);
-        }
-    }
-    for (column = 0; column < 3; ++column) {
-        for (row = 0; row < 4; ++row) {
-            SetRect(&rectangle, x - 12 - column * 9, y + row * 15 + column * 2,
-                    x - 6 - column * 9, y + row * 15 + 6 + column * 2);
-            fill(dc, rectangle, RGB(24, 35, 67));
-        }
-    }
+    HBITMAP image = LoadBitmapA(instance, MAKEINTRESOURCEA(id));
+    HDC memory;
+    HGDIOBJ old;
+    BITMAP info;
+    if (!image) return;
+    memory = CreateCompatibleDC(dc);
+    old = SelectObject(memory, image);
+    GetObjectA(image, sizeof(info), &info);
+    StretchBlt(dc, x, y, width, height, memory, 0, 0, info.bmWidth, info.bmHeight, SRCCOPY);
+    SelectObject(memory, old); DeleteDC(memory); DeleteObject(image);
+}
+
+static void rounded(HDC dc, RECT area, COLORREF color, COLORREF edge)
+{
+    HBRUSH brush = CreateSolidBrush(color);
+    HPEN pen = CreatePen(PS_SOLID, 1, edge);
+    HGDIOBJ old_brush = SelectObject(dc, brush), old_pen = SelectObject(dc, pen);
+    RoundRect(dc, area.left, area.top, area.right, area.bottom, sx(5), sy(5));
+    SelectObject(dc, old_brush); SelectObject(dc, old_pen);
+    DeleteObject(brush); DeleteObject(pen);
 }
 
 static void paint_welcome(HWND hwnd)
@@ -201,49 +223,68 @@ static void paint_welcome(HWND hwnd)
     PAINTSTRUCT paint;
     RECT area, rectangle;
     HDC dc = BeginPaint(hwnd, &paint);
-    int width, height, top, bottom, middle, band;
+    int band, index, top;
     GetClientRect(hwnd, &area);
-    width = area.right; height = area.bottom;
-    top = height / 8; bottom = height * 7 / 8; middle = width / 2;
-    fill(dc, area, RGB(87, 121, 209));
-    for (band = 0; band < 64; ++band) {
-        SetRect(&rectangle, width * band / 64, top, width * (band + 1) / 64, bottom);
-        fill(dc, rectangle, RGB(122 - band * 35 / 63, 153 - band * 32 / 63, 225 - band * 16 / 63));
+    fill(dc, area, RGB(90,126,220));
+    bitmap(dc, 100, 0, sy(78), sx(219), sy(207));
+    SetRect(&rectangle, 0, 0, area.right, sy(78));
+    fill(dc, rectangle, RGB(0,48,156));
+    for (band = 0; band < 128; ++band) {
+        SetRect(&rectangle, area.right*band/128, sy(504), area.right*(band+1)/128, area.bottom);
+        fill(dc, rectangle, RGB(57-band*57/127,52-band*4/127,173-band*17/127));
     }
-    SetRect(&rectangle, 0, 0, width, top);
-    fill(dc, rectangle, RGB(0, 48, 151));
-    SetRect(&rectangle, 0, bottom, width, height);
-    fill(dc, rectangle, RGB(38, 47, 158));
-    SetRect(&rectangle, middle - 1, top + 28, middle, bottom - 28);
-    fill(dc, rectangle, RGB(135, 166, 229));
-    SetRect(&rectangle, 0, top, width, top + 2);
-    fill(dc, rectangle, RGB(175, 195, 242));
-    SetRect(&rectangle, 0, bottom, width, bottom + 2);
-    fill(dc, rectangle, RGB(244, 174, 70));
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(255, 255, 255));
-    flag(dc, middle - 105, height / 2 - 150);
-    SetRect(&rectangle, 20, height / 2 - 75, middle - 30, height / 2);
-    label(dc, title_font, "Windows 95", rectangle, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-    SetRect(&rectangle, 20, height / 2, middle - 30, height / 2 + 60);
-    label(dc, body_font, "Welcome", rectangle, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-    SetRect(&rectangle, middle + 30, top + 30, width - 25, top + 100);
-    label(dc, body_font, finishing ? "Starting your session..." : "Sign in to Windows", rectangle, DT_LEFT | DT_WORDBREAK);
-    if (preview || native_logon_attached()) {
-        SetRect(&rectangle, middle + 30, height / 2 - 65, width - 25, height / 2 - 25);
-        label(dc, body_font, preview ? "Windows user" : native_logon_name(), rectangle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        SetRect(&rectangle, middle + 30, height / 2 - 12, width - 25, height / 2 + 15);
-        label(dc, small_font, "Password", rectangle, DT_LEFT | DT_SINGLELINE);
-        SetRect(&rectangle, middle + 30, height / 2 + 58, width - 25, height / 2 + 105);
-        label(dc, small_font, preview ? "Preview only. No password is accepted." : "Press Enter or click OK to sign in.", rectangle, DT_LEFT | DT_WORDBREAK);
-    } else {
-        SetRect(&rectangle, middle + 30, top + 105, width - 25, top + 175);
-        label(dc, small_font, login_window ? "Use the Windows logon dialog." :
-              "Waiting for Windows logon...", rectangle, DT_LEFT | DT_WORDBREAK);
+    bitmap(dc, 125, 0, sy(78), area.right, sy(2));
+    bitmap(dc, 126, 0, sy(504), area.right, sy(3));
+    bitmap(dc, 124, sx(398), sy(121), sx(1) > 0 ? sx(1) : 1, sy(340));
+    bitmap(dc, 123, sx(243), sy(232), sx(137), sy(86));
+    /* Retain the supplied artwork, replacing only the XP suffix with 95. */
+    SetRect(&rectangle, sx(358), sy(286), sx(384), sy(318));
+    fill(dc, rectangle, RGB(90,126,220));
+    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255,156,33));
+    label(dc, body_font, "95", rectangle, DT_LEFT | DT_SINGLELINE);
+    SetTextColor(dc, RGB(255,255,255));
+    SetRect(&rectangle, sx(40), sy(338), sx(355), sy(389));
+    label(dc, body_font, finishing ? "Starting your session..." : "To begin, enter your password", rectangle, DT_RIGHT | DT_WORDBREAK);
+    for (index = profile_page * 4; index < profile_page * 4 + visible_profiles(); ++index) {
+        top = profile_top(index);
+        if (index == selected_profile) bitmap(dc, 112, sx(425), sy(top), sx(350), sy(72));
+        SetRect(&rectangle, sx(433), sy(top+8), sx(488), sy(top+63));
+        rounded(dc, rectangle, index == selected_profile ? RGB(255,235,94) : RGB(239,247,255), RGB(239,247,255));
+        bitmap(dc, 114, sx(437), sy(top+12), sx(47), sy(47));
+        SetRect(&rectangle, sx(499), sy(top+9), sx(765), sy(top+36));
+        label(dc, index == selected_profile ? title_font : body_font,
+            profiles_name(index), rectangle, DT_LEFT | DT_SINGLELINE);
+        if (index == selected_profile) {
+            SetRect(&rectangle, sx(499), sy(top+35), sx(765), sy(top+50));
+            label(dc, small_font, preview ? "Preview" : (native_logon_attached() ? "Type your password." : "Preparing sign-in..."), rectangle, DT_LEFT | DT_SINGLELINE);
+            SetRect(&rectangle, sx(499), sy(top+50), sx(670), sy(top+76));
+            rounded(dc, rectangle, RGB(255,255,255), RGB(49,81,181));
+        }
     }
-    SetRect(&rectangle, 25, bottom + 15, width - 200, height - 8);
-    label(dc, small_font, preview ? "Welcome95 preview" : "Welcome95", rectangle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    SetRect(&rectangle, sx(470), sy(527), sx(775), sy(570));
+    label(dc, small_font, "After you log on, you can change your settings.\nOpen Welcome95 to customize this screen.", rectangle, DT_LEFT | DT_WORDBREAK);
     EndPaint(hwnd, &paint);
+}
+
+static void draw_button(DRAWITEMSTRUCT *item)
+{
+    RECT rectangle = item->rcItem;
+    RECT stripe;
+    int pixel, band;
+    HDC dc = item->hDC;
+    if (item->CtlID == ID_SUBMIT) {
+        bitmap(dc, 103, 0, 0, rectangle.right, rectangle.bottom);
+    } else if (item->CtlID == ID_POWER) {
+        for (pixel = 0; pixel < rectangle.right; ++pixel) {
+            band = (sx(25) + pixel) * 128 / GetSystemMetrics(SM_CXSCREEN);
+            SetRect(&stripe, pixel, 0, pixel + 1, rectangle.bottom);
+            fill(dc, stripe, RGB(57-band*57/127,52-band*4/127,173-band*17/127));
+        }
+        bitmap(dc, 107, 0, 0, sx(26), sy(26));
+        rectangle.left = sx(34);
+        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255,255,255));
+        label(dc, body_font, "Turn off computer", rectangle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
 }
 
 /* Identify an existing native password dialog without reading any edit text.
@@ -279,7 +320,7 @@ static void release_logon(void)
     if (login_window && IsWindow(login_window) && !login_was_topmost)
         SetWindowPos(login_window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     login_window = NULL;
-    if (screen) ShowWindow(GetDlgItem(screen, ID_NATIVE), SW_HIDE);
+    if (screen) { ShowWindow(GetDlgItem(screen, ID_NATIVE), SW_HIDE); EnableWindow(GetDlgItem(screen, ID_SUBMIT), preview); }
 }
 
 static void allow_logon(void)
@@ -288,15 +329,30 @@ static void allow_logon(void)
     RECT area;
     int x, y, width;
     if (preview || finishing) return;
-    if (login_window && IsWindow(login_window) && IsWindowVisible(login_window)) return;
+    if (login_window && IsWindow(login_window) && IsWindowVisible(login_window)) {
+        if (native_logon_attached()) {
+            login_geometry(&x, &y, &width);
+            native_logon_layout(x, y, width);
+            return;
+        }
+        if (prefer_native) return;
+        /* Retry while the provider is still initializing its controls. */
+    }
     release_logon();
     EnumWindows(find_logon, (LPARAM)&found);
     if (!found) return;
     login_window = found;
     login_was_topmost = (GetWindowLongA(found, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
     login_geometry(&x, &y, &width);
-    if (!prefer_native && escape_hotkey && close_hotkey && native_logon_attach(found, x, y, width)) {
-        ShowWindow(GetDlgItem(screen, ID_NATIVE), SW_SHOWNA);
+    if (!prefer_native && native_logon_attach(found, x, y, width)) {
+        selected_profile = profiles_remember(native_logon_name());
+        if (selected_profile < 0) selected_profile = 0;
+        profile_page = selected_profile / 4;
+        ShowWindow(GetDlgItem(screen, ID_PREV), profiles_count()>4 ? SW_SHOWNA : SW_HIDE);
+        ShowWindow(GetDlgItem(screen, ID_NEXT), profiles_count()>4 ? SW_SHOWNA : SW_HIDE);
+        login_geometry(&x, &y, &width); native_logon_layout(x, y, width);
+        position_arrow(screen);
+        EnableWindow(GetDlgItem(screen, ID_SUBMIT), TRUE);
         InvalidateRect(screen, NULL, FALSE);
         return;
     }
@@ -308,8 +364,9 @@ static void allow_logon(void)
         x = GetSystemMetrics(SM_CXSCREEN) - (area.right - area.left);
     if (x < 0) x = 0;
     if (y < 0) y = 0;
-    SetWindowPos(found, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
-    SetForegroundWindow(found);
+    SetWindowPos(found, prefer_native ? HWND_TOPMOST : HWND_NOTOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    ShowWindow(GetDlgItem(screen, ID_NATIVE), SW_SHOWNA);
+    if (prefer_native) SetForegroundWindow(found);
     InvalidateRect(screen, NULL, FALSE);
 }
 
@@ -318,7 +375,8 @@ static void maintain_topmost(HWND hwnd)
     HWND popup;
     UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
-    if (!login_window || !IsWindow(login_window) || !IsWindowVisible(login_window)) return;
+    if (!login_window || !IsWindow(login_window) || !IsWindowVisible(login_window) ||
+        (!native_logon_attached() && !prefer_native)) return;
     /* Keep the actual password controls above our own canvas. Owned error
        messages are the sole intentional exception to the welcome's priority. */
     SetWindowPos(login_window, HWND_TOPMOST, 0, 0, 0, 0, flags);
@@ -329,29 +387,37 @@ static void maintain_topmost(HWND hwnd)
 
 static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp)
 {
-    int x, y, width;
+    int x, y, width, index;
     switch (message) {
     case WM_CREATE:
         SetTimer(hwnd, TICK, 100, NULL);
         escape_hotkey = RegisterHotKey(hwnd, 1, 0, VK_ESCAPE);
         close_hotkey = RegisterHotKey(hwnd, 2, MOD_ALT, VK_F4);
-        CreateWindowA("BUTTON", "Windows dialog", WS_CHILD | BS_PUSHBUTTON,
-            GetSystemMetrics(SM_CXSCREEN) - 180, GetSystemMetrics(SM_CYSCREEN) * 7 / 8 + 15,
-            160, 28, hwnd, (HMENU)ID_NATIVE, instance, NULL);
+        CreateWindowA("BUTTON", "Trouble signing in?", WS_CHILD | BS_PUSHBUTTON,
+            sx(625), sy(572), sx(150), sy(23), hwnd, (HMENU)ID_NATIVE, instance, NULL);
         SendDlgItemMessageA(hwnd, ID_NATIVE, WM_SETFONT, (WPARAM)small_font, TRUE);
+        CreateWindowA("BUTTON", "Sign in", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            sx(685), sy(304), sx(26), sy(26), hwnd, (HMENU)ID_SUBMIT, instance, NULL);
+        EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), preview);
+        CreateWindowA("BUTTON", "Turn off computer", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            sx(25), sy(526), sx(245), sy(29), hwnd, (HMENU)ID_POWER, instance, NULL);
+        CreateWindowA("BUTTON", "<", WS_CHILD | (profiles_count()>4 ? WS_VISIBLE : 0), sx(720), sy(455), sx(25), sy(24), hwnd, (HMENU)ID_PREV, instance, NULL);
+        CreateWindowA("BUTTON", ">", WS_CHILD | (profiles_count()>4 ? WS_VISIBLE : 0), sx(750), sy(455), sx(25), sy(24), hwnd, (HMENU)ID_NEXT, instance, NULL);
+        position_arrow(hwnd);
         if (preview) {
             login_geometry(&x, &y, &width);
-            CreateWindowA("EDIT", "", WS_CHILD | WS_VISIBLE | WS_DISABLED | WS_BORDER | ES_PASSWORD,
-                x, y, width - 60, 30, hwnd, (HMENU)201, instance, NULL);
+            CreateWindowA("EDIT", "", WS_CHILD | WS_DISABLED | ES_PASSWORD,
+                x, y, width - sx(60), sy(22), hwnd, (HMENU)201, instance, NULL);
             /* A disabled preview edit never accepts a real password. */
             {
             HWND button = CreateWindowA("BUTTON", "Finish preview", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                x, y + 110, 150, 30, hwnd, (HMENU)ID_DONE, instance, NULL);
+                sx(625), sy(572), sx(150), sy(23), hwnd, (HMENU)ID_DONE, instance, NULL);
             SendMessageA(button, WM_SETFONT, (WPARAM)small_font, TRUE);
             }
         }
         return 0;
     case WM_PAINT: paint_welcome(hwnd); return 0;
+    case WM_DRAWITEM: draw_button((DRAWITEMSTRUCT *)lp); return TRUE;
     case WM_ERASEBKGND: return 1;
     case WM_CLOSE: return 0;
     case WM_HOTKEY: return 0;
@@ -363,12 +429,41 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if (wp == VK_ESCAPE || wp == VK_F4) return 0;
         if (wp == VK_RETURN) { native_logon_submit(); return 0; }
         break;
-    case WM_LBUTTONDOWN: native_logon_focus(); return 0;
+    case WM_LBUTTONDOWN:
+        x = LOWORD(lp); y = HIWORD(lp);
+        for (index = profile_page*4; index < profile_page*4 + visible_profiles(); ++index) {
+            if (x >= sx(425) && x < sx(775) && y >= sy(profile_top(index)) && y < sy(profile_top(index)+64) &&
+                index != selected_profile && (preview || native_logon_set_user(profiles_name(index)))) {
+                selected_profile = index;
+                login_geometry(&x, &y, &width);
+                if (preview) SetWindowPos(GetDlgItem(hwnd, 201), NULL, x, y, width-sx(60), sy(22), SWP_NOZORDER | SWP_NOACTIVATE);
+                else native_logon_layout(x, y, width);
+                position_arrow(hwnd); InvalidateRect(hwnd, NULL, FALSE); break;
+            }
+        }
+        native_logon_focus(); return 0;
     case WM_COMMAND:
+        if (LOWORD(wp) == ID_PREV || LOWORD(wp) == ID_NEXT) {
+            index = profile_page + (LOWORD(wp) == ID_NEXT ? 1 : -1);
+            if (index >= 0 && index*4 < profiles_count() &&
+                (preview || native_logon_set_user(profiles_name(index*4)))) {
+                profile_page = index; selected_profile = index*4;
+                login_geometry(&x, &y, &width);
+                if (preview) SetWindowPos(GetDlgItem(hwnd, 201), NULL, x, y, width-sx(60), sy(22), SWP_NOZORDER | SWP_NOACTIVATE);
+                else native_logon_layout(x, y, width);
+                position_arrow(hwnd); InvalidateRect(hwnd, NULL, FALSE);
+            }
+        }
+        if (LOWORD(wp) == ID_SUBMIT) {
+            if (preview) { finishing = TRUE; finish_time = GetTickCount(); }
+            else native_logon_submit();
+        }
+        if (LOWORD(wp) == ID_POWER && !preview && MessageBoxA(hwnd, "Turn off this computer?", APP, MB_YESNO | MB_ICONQUESTION) == IDYES)
+            ExitWindowsEx(EWX_SHUTDOWN, 0);
         if (preview && LOWORD(wp) == ID_DONE && !finishing) {
             finishing = TRUE; finish_time = GetTickCount(); InvalidateRect(hwnd, NULL, FALSE);
         }
-        if (LOWORD(wp) == ID_NATIVE && native_logon_attached()) {
+        if (LOWORD(wp) == ID_NATIVE && login_window) {
             prefer_native = TRUE;
             native_logon_restore(TRUE);
             ShowWindow(GetDlgItem(hwnd, ID_NATIVE), SW_HIDE);
@@ -397,12 +492,13 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             native_logon_restore(TRUE);
             ShowWindow(GetDlgItem(hwnd, ID_NATIVE), SW_HIDE);
         }
-        SetWindowPos(GetDlgItem(hwnd, ID_NATIVE), NULL, GetSystemMetrics(SM_CXSCREEN) - 180,
-            GetSystemMetrics(SM_CYSCREEN) * 7 / 8 + 15, 160, 28, SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(GetDlgItem(hwnd, ID_NATIVE), NULL, sx(625), sy(572), sx(150), sy(23), SWP_NOZORDER | SWP_NOACTIVATE);
         if (preview) {
-            SetWindowPos(GetDlgItem(hwnd, 201), NULL, x, y, width - 60, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-            SetWindowPos(GetDlgItem(hwnd, ID_DONE), NULL, x, y + 110, 150, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(GetDlgItem(hwnd, 201), NULL, x, y, width - sx(60), sy(22), SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(GetDlgItem(hwnd, ID_DONE), NULL, sx(625), sy(572), sx(150), sy(23), SWP_NOZORDER | SWP_NOACTIVATE);
         }
+        position_arrow(hwnd);
+        SetWindowPos(GetDlgItem(hwnd, ID_POWER), NULL, sx(25), sy(526), sx(245), sy(29), SWP_NOZORDER | SWP_NOACTIVATE);
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
     case WM_DESTROY:
@@ -507,11 +603,12 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
             }
         }
     }
-    title_font = CreateFontA(-42, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET,
+    profiles_load();
+    title_font = CreateFontA(-sy(20), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
-    body_font = CreateFontA(-24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+    body_font = CreateFontA(-sy(20), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
-    small_font = CreateFontA(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+    small_font = CreateFontA(-sy(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
     zero_memory(&cls, sizeof(cls));
     cls.hInstance = instance; cls.hCursor = LoadCursor(NULL, IDC_ARROW);

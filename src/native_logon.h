@@ -11,6 +11,7 @@ void native_logon_restore(BOOL reveal_original);
 BOOL native_logon_attached(void);
 void native_logon_focus(void);
 void native_logon_submit(void);
+BOOL native_logon_set_user(const char *name);
 const char *native_logon_name(void);
 
 #endif

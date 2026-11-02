@@ -41,6 +41,9 @@ void topmost_test_entry(void)
         300, 250, 200, 30, NULL, NULL, current, NULL);
     test_check(canvas && competitor && login_window, "create competing desktop windows");
     if (!canvas || !competitor || !login_window) { CloseHandle(test_output); ExitProcess(1); }
+    maintain_topmost(canvas);
+    test_check(above(canvas, login_window), "unsupported native dialog stays covered until explicitly requested");
+    prefer_native = TRUE;
     SetForegroundWindow(login_window);
     foreground = GetForegroundWindow();
     SetWindowPos(competitor, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);

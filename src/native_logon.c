@@ -7,6 +7,7 @@ typedef struct {
     RECT rectangle;
     BOOL visible;
     BOOL enabled;
+    LONG style, exstyle;
 } CONTROL_STATE;
 
 static struct {
@@ -53,6 +54,8 @@ static BOOL CALLBACK capture_control(HWND child, LPARAM parameter)
     control->window = child;
     control->visible = IsWindowVisible(child);
     control->enabled = IsWindowEnabled(child);
+    control->style = GetWindowLongA(child, GWL_STYLE);
+    control->exstyle = GetWindowLongA(child, GWL_EXSTYLE);
     if (!GetWindowRect(child, &control->rectangle)) {
         saved.unsupported = TRUE;
         return FALSE;
@@ -68,8 +71,8 @@ static BOOL CALLBACK capture_control(HWND child, LPARAM parameter)
             saved.password = child;
         } else saved.username = child;
     } else if (!lstrcmpiA(name, "Button")) {
-        if (id == IDOK) saved.submit = child;
-        else if (id != IDCANCEL && (style & 0x0f) != BS_GROUPBOX)
+        if (id == IDOK || (style & 0x0f) == BS_DEFPUSHBUTTON) saved.submit = child;
+        else if ((style & 0x0f) != BS_PUSHBUTTON && (style & 0x0f) != BS_GROUPBOX)
             saved.unsupported = TRUE;
     } else if (lstrcmpiA(name, "Static")) {
         /* Do not hide domain selectors, password-change fields or options. */
@@ -108,10 +111,12 @@ void native_logon_restore(BOOL reveal_original)
         for (index = 0; index < saved.count; ++index) {
             CONTROL_STATE *control = &saved.children[index];
             if (!IsWindow(control->window) || GetParent(control->window) != saved.dialog) continue;
+            set_style(control->window, GWL_STYLE, control->style);
+            set_style(control->window, GWL_EXSTYLE, control->exstyle);
             SetWindowPos(control->window, NULL, control->rectangle.left, control->rectangle.top,
                 control->rectangle.right - control->rectangle.left,
                 control->rectangle.bottom - control->rectangle.top,
-                SWP_NOZORDER | SWP_NOACTIVATE);
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             EnableWindow(control->window, control->enabled);
             ShowWindow(control->window, control->visible ? SW_SHOWNA : SW_HIDE);
         }
@@ -125,33 +130,32 @@ void native_logon_restore(BOOL reveal_original)
 
 BOOL native_logon_layout(int x, int y, int width)
 {
-    HRGN region, button;
+    HRGN region;
     RECT rectangle;
     POINT origin;
-    int dx, dy;
+    int dx, dy, index, gap, height;
     if (!native_logon_attached() || width < 160) return FALSE;
+    gap = MulDiv(60, GetSystemMetrics(SM_CXSCREEN), 800);
+    height = MulDiv(22, GetSystemMetrics(SM_CYSCREEN), 600);
+    set_style(saved.dialog, GWL_STYLE, GetWindowLongA(saved.dialog, GWL_STYLE) &
+        ~(WS_CAPTION | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | WS_SYSMENU | DS_MODALFRAME));
+    for (index = 0; index < saved.count; ++index) {
+        HWND child = saved.children[index].window;
+        if (child != saved.password) ShowWindow(child, SW_HIDE);
+    }
     if (!SetWindowPos(saved.dialog, HWND_TOPMOST, x, y, width, 30,
                       SWP_FRAMECHANGED | SWP_NOACTIVATE)) return FALSE;
-    if (!SetWindowPos(saved.password, NULL, 0, 0, width - 60, 30,
-                      SWP_NOZORDER | SWP_NOACTIVATE)) return FALSE;
+    if (!SetWindowPos(saved.password, NULL, 0, 0, width - gap, height,
+                      SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)) return FALSE;
     if (!SetWindowPos(saved.submit, NULL, width - 52, 0, 52, 30,
                       SWP_NOZORDER | SWP_NOACTIVATE)) return FALSE;
     origin.x = 0; origin.y = 0;
     if (!ClientToScreen(saved.dialog, &origin) || !GetWindowRect(saved.dialog, &rectangle)) return FALSE;
     dx = origin.x - rectangle.left; dy = origin.y - rectangle.top;
-    region = CreateRectRgn(dx, dy, dx + width - 60, dy + 30);
-    button = CreateRectRgn(dx + width - 52, dy, dx + width, dy + 30);
-    if (!region || !button) {
-        if (region) DeleteObject(region);
-        if (button) DeleteObject(button);
-        return FALSE;
-    }
-    if (CombineRgn(region, region, button, RGN_OR) == ERROR) {
-        DeleteObject(region); DeleteObject(button); return FALSE;
-    }
-    DeleteObject(button);
+    region = CreateRectRgn(dx, dy, dx + width - gap, dy + height);
+    if (!region) return FALSE;
     /* The system owns the region after a successful SetWindowRgn. Outside these
-       two rectangles the native dialog is invisible AND does not receive clicks. */
+       password rectangle the native dialog is invisible AND does not receive clicks. */
     if (!SetWindowRgn(saved.dialog, region, TRUE)) {
         DeleteObject(region); return FALSE;
     }
@@ -169,7 +173,22 @@ void native_logon_focus(void)
 void native_logon_submit(void)
 {
     if (native_logon_attached() && IsWindowEnabled(saved.dialog) && IsWindowEnabled(saved.submit))
-        PostMessageA(saved.dialog, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), (LPARAM)saved.submit);
+        PostMessageA(saved.dialog, WM_COMMAND, MAKEWPARAM(GetWindowLongA(saved.submit, GWL_ID), BN_CLICKED), (LPARAM)saved.submit);
+}
+
+BOOL native_logon_set_user(const char *name)
+{
+    DWORD_PTR result;
+    if (!native_logon_attached() || !name || !*name || lstrlenA(name) >= (int)sizeof(saved.name) ||
+        !IsWindowEnabled(saved.dialog)) return FALSE;
+    /* Clear the previous account's input before changing the native username. */
+    if (!SendMessageTimeoutA(saved.password, WM_SETTEXT, 0, (LPARAM)"",
+        SMTO_ABORTIFHUNG | SMTO_BLOCK, 200, &result) || !result) return FALSE;
+    if (!SendMessageTimeoutA(saved.username, WM_SETTEXT, 0, (LPARAM)name,
+        SMTO_ABORTIFHUNG | SMTO_BLOCK, 200, &result) || !result) return FALSE;
+    lstrcpynA(saved.name, name, sizeof(saved.name));
+    native_logon_focus();
+    return TRUE;
 }
 
 BOOL native_logon_attach(HWND dialog, int x, int y, int width)
@@ -212,10 +231,12 @@ BOOL native_logon_attach(HWND dialog, int x, int y, int width)
     }
     for (index = 0; index < saved.count; ++index) {
         HWND child = saved.children[index].window;
-        if (child == saved.password || child == saved.submit) continue;
+        if (child == saved.password) continue;
         ShowWindow(child, SW_HIDE);
         if (GetWindowLongA(child, GWL_ID) == IDCANCEL) EnableWindow(child, FALSE);
     }
+    set_style(saved.password, GWL_STYLE, GetWindowLongA(saved.password, GWL_STYLE) & ~WS_BORDER);
+    set_style(saved.password, GWL_EXSTYLE, GetWindowLongA(saved.password, GWL_EXSTYLE) & ~WS_EX_CLIENTEDGE);
     if (!native_logon_layout(x, y, width)) {
         native_logon_restore(TRUE); return FALSE;
     }
