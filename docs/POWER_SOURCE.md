@@ -29,3 +29,9 @@ cancellation and error prompts must remain accessible. Preview dispatches no
 power operation. Tests verify this lifecycle and the PIF protocol with synthetic
 fixtures; actual APM power transitions, pre-logon PIF execution and return from
 MS-DOS still require Windows 95.
+
+
+Welcome95 now explicitly invalidates/repaints its owner and child controls after
+removing the shade. This is a local rendering fix for stale owner-drawn button
+pixels; power dispatch, snapshot dimming and original enabled-state restoration
+are unchanged. Regression checks inspect the actual welcome power-button pixels.

@@ -104,6 +104,8 @@ void power_dialog_close(void)
     if(owner_enabled && IsWindow(context.owner)) EnableWindow(context.owner,TRUE);
     if(input_enabled && IsWindow(context.native_input)) EnableWindow(context.native_input,TRUE);
     owner_enabled=input_enabled=FALSE;
+    if(old && IsWindow(context.owner))
+        RedrawWindow(context.owner,NULL,NULL,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
     if(old && previous_focus && IsWindowVisible(previous_focus) && IsWindowEnabled(previous_focus)) SetForegroundWindow(previous_focus);
     if(old && context.restore_focus) context.restore_focus();
 }

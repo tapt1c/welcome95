@@ -10,6 +10,7 @@ BOOL native_logon_layout(int x, int y, int width);
 void native_logon_restore(BOOL reveal_original);
 BOOL native_logon_attached(void);
 void native_logon_focus(void);
+void native_logon_repaint(void);
 void native_logon_submit(void);
 BOOL native_logon_ready(void);
 BOOL native_logon_try_empty(const char *name);

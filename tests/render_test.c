@@ -1,5 +1,15 @@
 /* Check actual GDI downscaling; no image processing substitutes for drawing. */
 #include "../src/welcome95.c"
+static int failures;
+static void check(HANDLE log,BOOL okay,const char *text)
+{
+    DWORD written;
+    const char *prefix=okay ? "PASS: " : "FAIL: ";
+    if(!okay) ++failures;
+    WriteFile(log,prefix,(DWORD)lstrlenA(prefix),&written,NULL);
+    WriteFile(log,text,(DWORD)lstrlenA(text),&written,NULL);
+    WriteFile(log,"\r\n",2,&written,NULL);
+}
 void render_test_entry(void)
 {
     HRSRC resource;
@@ -48,6 +58,33 @@ void render_test_entry(void)
         WriteFile(log,a,(DWORD)lstrlenA(a),&written,NULL); WriteFile(log,b,(DWORD)lstrlenA(b),&written,NULL);
         WriteFile(log,d,(DWORD)lstrlenA(d),&written,NULL);
     }
+    {
+        DRAWITEMSTRUCT item;
+        RECT rect;
+        COLORREF background;
+        int mode;
+        zero_memory(&item,sizeof(item)); item.CtlType=ODT_BUTTON; item.CtlID=ID_POWER;
+        item.itemAction=ODA_DRAWENTIRE; item.hDC=dc; SetRect(&item.rcItem,10,20,170,49);
+        SetRect(&rect,0,0,175,165); fill(dc,rect,RGB(255,0,255));
+        create_ui_fonts();
+        SetTextColor(dc,RGB(10,200,30)); SetBkColor(dc,RGB(200,10,30)); SetBkMode(dc,OPAQUE);
+        mode=GetStretchBltMode(dc); background=GetBkColor(dc);
+        draw_button(&item);
+        check(log,GetPixel(dc,16,38)!=RGB(255,0,255) && GetRValue(GetPixel(dc,16,38))>150,
+            "owner drawing places the power icon at a nonzero item origin");
+        color=GetPixel(dc,165,24);
+        check(log,color!=CLR_INVALID && GetBValue(color)>100 && GetRValue(color)<80 && GetPixel(dc,5,5)==RGB(255,0,255),
+            "owner drawing fills the whole item without painting outside it");
+        check(log,GetTextColor(dc)==RGB(10,200,30) && GetBkColor(dc)==background &&
+            GetBkMode(dc)==OPAQUE && GetStretchBltMode(dc)==mode,
+            "owner drawing restores the caller's GDI colors, background and stretch state");
+        item.itemAction=ODA_FOCUS; item.itemState=ODS_FOCUS;
+        SetRect(&rect,10,20,170,49); fill(dc,rect,RGB(0,0,0)); draw_button(&item);
+        color=GetPixel(dc,165,24);
+        check(log,color!=CLR_INVALID && GetBValue(color)>100 && GetRValue(color)<80,
+            "a focus-only owner-draw notification still repairs every background pixel");
+        release_ui_fonts();
+    }
     SelectObject(dc,old); DeleteObject(frame); DeleteDC(dc); ReleaseDC(NULL,device); CloseHandle(log);
-    ExitProcess(drew && clean && restored ? 0 : 1);
+    ExitProcess(drew && clean && restored && !failures ? 0 : 1);
 }

@@ -5,6 +5,13 @@
 
 static HANDLE output;
 static int failures;
+static WNDPROC original_dialog_proc;
+static int layout_changes;
+static LRESULT CALLBACK count_layout(HWND window,UINT message,WPARAM wp,LPARAM lp)
+{
+    if(message==WM_WINDOWPOSCHANGING || message==WM_STYLECHANGING) ++layout_changes;
+    return CallWindowProcA(original_dialog_proc,window,message,wp,lp);
+}
 
 static void check(BOOL condition, const char *description)
 {
@@ -94,6 +101,33 @@ void test_entry(void)
     GetWindowRect(password,&live_password_rectangle);
     check(rectangle.bottom-rectangle.top==live_password_rectangle.bottom-live_password_rectangle.top,
         "native container has no extra strip below the password field");
+
+    /* A provider may refresh its controls without moving the outer dialog. */
+    ShowWindow(password, SW_HIDE);
+    SetWindowPos(password, NULL, 20, 55, 150, 24, SWP_NOZORDER | SWP_NOACTIVATE);
+    check(native_logon_layout(320, 280, 280) && IsWindowVisible(password),
+          "repair a provider-hidden password even when the outer layout is cached");
+    GetWindowRect(password, &rectangle);
+    MapWindowPoints(NULL, dialog, (POINT *)&rectangle, 2);
+    check(rectangle.left == 0 && rectangle.top == 0 && rectangle.right == 220 && rectangle.bottom == 22,
+          "repair a provider-moved password without changing its parent");
+    SetWindowRgn(dialog, NULL, FALSE);
+    check(native_logon_layout(320, 280, 280) && GetWindowRgn(dialog, region) != ERROR &&
+          PtInRegion(region, 10, 10) && !PtInRegion(region, 225, 10),
+          "rebuild a clipping region removed by a provider refresh");
+    GetWindowTextA(password, text, sizeof(text));
+    check(!lstrcmpA(text, "synthetic-test-only"), "repair preserves synthetic input instead of clearing it");
+    EnableWindow(dialog, FALSE);
+    EnableWindow(password, FALSE);
+    check(native_logon_layout(320, 280, 280) && !IsWindowEnabled(dialog) && !IsWindowEnabled(password),
+          "layout repair never enables input disabled by a native modal prompt");
+    EnableWindow(password, TRUE);
+    EnableWindow(dialog, TRUE);
+    original_dialog_proc=(WNDPROC)SetWindowLongPtrA(dialog,GWLP_WNDPROC,(LONG_PTR)count_layout);
+    layout_changes=0;
+    for(index=0;index<100;++index) native_logon_layout(320,280,280);
+    SetWindowLongPtrA(dialog,GWLP_WNDPROC,(LONG_PTR)original_dialog_proc);
+    check(!layout_changes,"100 stable native-field checks do not mutate styles, move windows or cause flicker");
 
     check(native_logon_set_user("Alex"), "select another account through the native username field");
     GetWindowTextA(username, text, sizeof(text));

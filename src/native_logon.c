@@ -59,6 +59,24 @@ static void diagnose(const char *reason)
         WriteFile(file,line,(DWORD)lstrlenA(line),&written,NULL);
         ReleaseDC(NULL,display);
     }
+    if(IsWindow(saved.password)) {
+        RECT field,clip; POINT point; HWND hit;
+        if(GetWindowRect(saved.password,&field)) {
+            point.x=(field.left+field.right)/2; point.y=(field.top+field.bottom)/2;
+            hit=WindowFromPoint(point); class_name[0]=0;
+            if(hit) GetClassNameA(hit,class_name,sizeof(class_name));
+            MapWindowPoints(NULL,saved.dialog,(POINT *)&field,2);
+            wsprintfA(line,"  password rectangle=%d,%d,%d,%d visible=%d enabled=%d hit-class=%s hit-id=%ld\r\n",
+                field.left,field.top,field.right,field.bottom,IsWindowVisible(saved.password),
+                IsWindowEnabled(saved.password),class_name,hit ? GetWindowLongA(hit,GWL_ID) : 0);
+            WriteFile(file,line,(DWORD)lstrlenA(line),&written,NULL);
+            index=GetWindowRgnBox(saved.dialog,&clip);
+            wsprintfA(line,"  clip-type=%d rectangle=%d,%d,%d,%d\r\n",index,
+                index!=ERROR ? clip.left : 0,index!=ERROR ? clip.top : 0,
+                index!=ERROR ? clip.right : 0,index!=ERROR ? clip.bottom : 0);
+            WriteFile(file,line,(DWORD)lstrlenA(line),&written,NULL);
+        }
+    }
     for (index = 0; index < saved.count; ++index) {
         HWND child = saved.children[index].window;
         class_name[0] = '\0'; GetClassNameA(child, class_name, sizeof(class_name));
@@ -133,7 +151,9 @@ static BOOL CALLBACK capture_control(HWND child, LPARAM parameter)
 
 BOOL native_logon_attached(void)
 {
-    return saved.attached && same_dialog();
+    return saved.attached && same_dialog() && IsWindow(saved.password) &&
+        GetParent(saved.password) == saved.dialog && IsWindow(saved.submit) &&
+        GetParent(saved.submit) == saved.dialog;
 }
 
 BOOL native_logon_user_empty(void) { return !saved.name[0]; }
@@ -180,6 +200,33 @@ void native_logon_restore(BOOL reveal_original)
     saved.attached = FALSE; saved.layout_valid = FALSE;
 }
 
+static BOOL layout_matches(int x, int y, int width, int height)
+{
+    RECT rectangle, field, clipping, expected;
+    POINT origin;
+    int index;
+    if (!saved.layout_valid || saved.layout_x != x || saved.layout_y != y || saved.layout_width != width ||
+        !GetWindowRect(saved.dialog, &rectangle) || rectangle.left != x || rectangle.top != y ||
+        rectangle.right-rectangle.left != width || rectangle.bottom-rectangle.top != height ||
+        (GetWindowLongA(saved.dialog, GWL_STYLE) & (WS_CAPTION | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | DS_MODALFRAME)) ||
+        (GetWindowLongA(saved.dialog, GWL_EXSTYLE) & (WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_STATICEDGE)) ||
+        !(GetWindowLongA(saved.password, GWL_STYLE) & WS_VISIBLE) ||
+        (GetWindowLongA(saved.password, GWL_STYLE) & WS_BORDER) ||
+        (GetWindowLongA(saved.password, GWL_EXSTYLE) & (WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME)) ||
+        !GetWindowRect(saved.password, &field)) return FALSE;
+    MapWindowPoints(NULL, saved.dialog, (POINT *)&field, 2);
+    SetRect(&expected, 0, 0, width-60, height);
+    if (!EqualRect(&field, &expected)) return FALSE;
+    origin.x=0; origin.y=0;
+    if (!ClientToScreen(saved.dialog, &origin)) return FALSE;
+    OffsetRect(&expected, origin.x-rectangle.left, origin.y-rectangle.top);
+    if (GetWindowRgnBox(saved.dialog, &clipping) != SIMPLEREGION || !EqualRect(&clipping, &expected)) return FALSE;
+    for (index=0; index<saved.count; ++index)
+        if (saved.children[index].window != saved.password &&
+            (GetWindowLongA(saved.children[index].window, GWL_STYLE) & WS_VISIBLE)) return FALSE;
+    return TRUE;
+}
+
 BOOL native_logon_layout(int x, int y, int width)
 {
     HRGN region;
@@ -189,14 +236,15 @@ BOOL native_logon_layout(int x, int y, int width)
     if (!native_logon_attached() || width < 160) return FALSE;
     gap = 60;
     height = 22;
-    if (saved.layout_valid && saved.layout_x == x && saved.layout_y == y && saved.layout_width == width &&
-        GetWindowRect(saved.dialog, &rectangle) && rectangle.left == x && rectangle.top == y &&
-        rectangle.right-rectangle.left == width &&
-        !(GetWindowLongA(saved.dialog, GWL_STYLE) & (WS_CAPTION | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME)))
-        return TRUE;
+    if (layout_matches(x, y, width, height)) return TRUE;
 
     set_style(saved.dialog, GWL_STYLE, GetWindowLongA(saved.dialog, GWL_STYLE) &
         ~(WS_CAPTION | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | WS_SYSMENU | DS_MODALFRAME));
+    set_style(saved.dialog, GWL_EXSTYLE, GetWindowLongA(saved.dialog, GWL_EXSTYLE) &
+        ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_STATICEDGE));
+    set_style(saved.password, GWL_STYLE, GetWindowLongA(saved.password, GWL_STYLE) & ~WS_BORDER);
+    set_style(saved.password, GWL_EXSTYLE, GetWindowLongA(saved.password, GWL_EXSTYLE) &
+        ~(WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME));
     for (index = 0; index < saved.count; ++index) {
         HWND child = saved.children[index].window;
         if (child != saved.password) ShowWindow(child, SW_HIDE);
@@ -217,6 +265,12 @@ BOOL native_logon_layout(int x, int y, int width)
     if (!SetWindowRgn(saved.dialog, region, TRUE)) {
         DeleteObject(region); return FALSE;
     }
+    /* Providers can refresh their children on activation or after a rejected
+       logon. Repair the real Edit, never create a second password field. */
+    if (!(GetWindowLongA(saved.password, GWL_STYLE) & WS_VISIBLE)) ShowWindow(saved.password, SW_SHOWNA);
+    InvalidateRect(saved.password, NULL, FALSE);
+    if (saved.layout_valid && GetForegroundWindow() == saved.dialog) native_logon_focus();
+    if (saved.layout_valid) diagnose("password layout repaired");
     saved.layout_valid = TRUE; saved.layout_x = x; saved.layout_y = y; saved.layout_width = width;
     return TRUE;
 }
@@ -227,6 +281,14 @@ void native_logon_focus(void)
     SetForegroundWindow(saved.dialog);
     /* The native thread sets focus itself; no cross-thread SetFocus/hook needed. */
     PostMessageA(saved.dialog, WM_NEXTDLGCTL, (WPARAM)saved.password, TRUE);
+}
+
+void native_logon_repaint(void)
+{
+    /* Queue painting on the provider's thread; never synchronously send WM_PAINT
+       across processes or reveal a form already hidden by Windows. */
+    if (native_logon_attached() && IsWindowVisible(saved.dialog))
+        InvalidateRect(saved.password, NULL, FALSE);
 }
 
 void native_logon_submit(void)
@@ -316,6 +378,7 @@ BOOL native_logon_attach(HWND dialog, int x, int y, int width)
         diagnose("cannot place password field"); native_logon_restore(TRUE); return FALSE;
     }
     ShowWindow(dialog, SW_SHOWNA);
+    native_logon_repaint();
     diagnose("attached");
     native_logon_focus();
     return TRUE;

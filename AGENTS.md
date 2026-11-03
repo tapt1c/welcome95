@@ -167,3 +167,15 @@ new credential dialog, submit input or signal readiness/closure as authenticatio
 Only start a new welcome cycle on real session signals/provider appearance.
 Stage logs may contain constant stage tags, ticks, PIDs and numeric codes only.
 No paths, command lines, usernames or edit contents in W95START.LOG.
+
+
+## Native field and owner-draw repaint
+
+A cached layout must validate the actual native Edit visibility/rectangle/styles
+and clipping region, not just the dialog bounds. Repairs must preserve typed input
+and Windows-disabled states. Queue cross-process painting; do not synchronously
+send WM_PAINT to the provider. Idle layouts must stay mutation-free.
+
+After presenting a WS_CLIPCHILDREN parent buffer, explicitly repaint its custom
+buttons. Preserve the caller's GDI DC state and honor DRAWITEMSTRUCT's item origin.
+Check real pixels after shade cancellation and parent damage, not only commands.

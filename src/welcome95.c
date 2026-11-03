@@ -277,12 +277,24 @@ static void label(HDC dc, HFONT font, const char *text, RECT rectangle, UINT fla
 static void finish_paint(HWND hwnd, PAINTSTRUCT *paint, HDC dc, HBITMAP frame, HGDIOBJ old)
 {
     RECT area;
+    HWND button;
+    int index;
+    static const int custom_buttons[]={ID_POWER,ID_SUBMIT};
     if(frame) {
         GetClientRect(hwnd,&area);
         BitBlt(paint->hdc,0,0,area.right,area.bottom,dc,0,0,SRCCOPY);
         SelectObject(dc,old); DeleteObject(frame); DeleteDC(dc);
     }
     EndPaint(hwnd,paint);
+    /* WS_CLIPCHILDREN keeps the parent's buffer out of the button rectangles.
+       Win9x can invalidate just the parent after uncovering/recreating it. */
+    for(index=0;index<2;++index) {
+        button=GetDlgItem(hwnd,custom_buttons[index]);
+        if(button && IsWindowVisible(button)) {
+            InvalidateRect(button,NULL,FALSE); UpdateWindow(button);
+        }
+    }
+    if(status_view==VIEW_LOGIN) native_logon_repaint();
 }
 
 static void bitmap(HDC dc, int id, int x, int y, int width, int height)
@@ -509,21 +521,23 @@ static void draw_button(DRAWITEMSTRUCT *item)
 {
     RECT rectangle = item->rcItem;
     RECT stripe;
+    int state=SaveDC(item->hDC);
     int pixel, band;
     HDC dc = item->hDC;
+    SetBkMode(dc,TRANSPARENT); SetTextColor(dc,RGB(255,255,255));
     if (item->CtlID == ID_SUBMIT) {
-        bitmap(dc, 103, 0, 0, rectangle.right, rectangle.bottom);
+        bitmap(dc, 103, rectangle.left, rectangle.top, rectangle.right-rectangle.left, rectangle.bottom-rectangle.top);
     } else if (item->CtlID == ID_POWER) {
-        for (pixel = 0; pixel < rectangle.right; ++pixel) {
-            band = (25 + pixel) * 128 / GetSystemMetrics(SM_CXSCREEN);
-            SetRect(&stripe, pixel, 0, pixel + 1, rectangle.bottom);
+        for (pixel = rectangle.left; pixel < rectangle.right; ++pixel) {
+            band = (25 + pixel-rectangle.left) * 128 / GetSystemMetrics(SM_CXSCREEN);
+            SetRect(&stripe, pixel, rectangle.top, pixel + 1, rectangle.bottom);
             fill(dc, stripe, RGB(57-band*57/127,52-band*4/127,173-band*17/127));
         }
-        bitmap(dc, 107, 0, 0, 26, 26);
-        rectangle.left = 34;
-        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255,255,255));
+        bitmap(dc, 107, rectangle.left, rectangle.top, 26, 26);
+        rectangle.left += 34;
         label(dc, body_font, "Turn off computer", rectangle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
+    if(state) RestoreDC(dc,state);
 }
 
 /* Identify an existing native password dialog without reading any edit text.
@@ -773,6 +787,15 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     case WM_LBUTTONDOWN:
         if(power_dialog_active()) return 0;
         if (status_view != VIEW_LOGIN) return 0;
+        if (account_open() && !pending_profile && native_logon_attached()) {
+            login_geometry(&x, &y, &width);
+            /* The painted border belongs to this canvas. Clicking it must focus
+               Windows' real Edit too, without forwarding or reading any text. */
+            if ((int)LOWORD(lp) >= x-2 && (int)LOWORD(lp) < x+width-58 &&
+                (int)HIWORD(lp) >= y-2 && (int)HIWORD(lp) < y+24) {
+                native_logon_focus(); return 0;
+            }
+        }
         x = LOWORD(lp); y = HIWORD(lp);
         for (index = page_first(); index < page_first() + visible_profiles(); ++index) {
             if (x >= card_x(425) && x < card_x(775) && y >= row_y(profile_top(index)) && y < row_y(profile_top(index)+64) &&

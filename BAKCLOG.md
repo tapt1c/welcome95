@@ -253,3 +253,34 @@ as i386/Windows 4.0 without CRT; the bootstrap imports only three baseline DLLs.
 - [ ] Repeat the exact CP1251 Win95 desktop path and inspect W95START.LOG.
 - [ ] Confirm real legacy-loader startup, delay, logoff and power cancellation.
 - [ ] Verify physical Ctrl+Alt+Shift+L, native wrong-password and provider notices.
+
+
+## Missing native input and black power button after logoff (current)
+
+Evidence: the new 26.32s recording shows an attached-looking card without a caret;
+Windows rejects a blank submit. The user confirms typing works in the restored
+standard dialog. A separate screenshot shows a wholly black power-button area.
+This establishes an integration/rendering failure, not its exact Win95 message
+sequence. The previous bootstrap change remains in place.
+
+The old layout cache checked the outer dialog only. Three new regressions fail
+before the fix when the provider hides/moves its Edit or removes the clipping
+region. Layout now validates and repairs the real child and clipping too, without
+clearing input or enabling a native modal form. Border clicks request native
+focus. Canvas paints queue an asynchronous repaint on the provider's Edit.
+Metadata diagnostics now include rectangles, region type and hit class/ID only.
+
+Owner-drawn buttons are explicitly repainted after their clipped parent buffer
+is presented. Closing the shade invalidates the owner and children. The drawing
+callback respects the item origin and saves/restores the caller's GDI state.
+No repeated z-order writes or whole-screen timer redraws were added.
+
+Validation: 363 checks per resolution under Wine64/Xvfb at 640x480x16,
+800x600x24 and 1024x768x24: 43 native-control checks, 42 lifecycle/cross-process
+checks, 7 rendering checks and 48 power checks among the existing suites.
+Input in tests is synthetic; OS authentication, logoff and power remain inert.
+
+- [ ] Verify typed stars/caret and mouse focus after real Win95 logoff/relogon.
+- [ ] Repeat the native wrong-password prompt and ensure existing input survives.
+- [ ] Recheck the power button after uncovering, focus changes and repeated Cancel
+      on the user's actual Win95 GDI/display driver.

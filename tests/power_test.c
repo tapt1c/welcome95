@@ -43,6 +43,15 @@ static BOOL above(HWND first,HWND second)
     while(window) { if(window==first) return TRUE; if(window==second) return FALSE; window=GetWindow(window,GW_HWNDNEXT); }
     return FALSE;
 }
+static BOOL power_pixels(void)
+{
+    HWND button=GetDlgItem(screen,ID_POWER);
+    HDC dc=GetDC(button);
+    COLORREF icon=GetPixel(dc,6,18),background=GetPixel(dc,230,5);
+    ReleaseDC(button,dc);
+    return icon!=CLR_INVALID && GetRValue(icon)>150 && GetGValue(icon)<180 &&
+        background!=CLR_INVALID && GetBValue(background)>100 && GetRValue(background)<80;
+}
 static void dispatcher_tests(void)
 {
     PowerOperations ops;
@@ -89,9 +98,15 @@ void power_test_entry(void)
     zero_memory(&cls,sizeof(cls)); cls.hInstance=instance; cls.lpfnWndProc=welcome_proc; cls.lpszClassName="Welcome95.PowerOwnerTest";
     cls.hCursor=LoadCursor(NULL,IDC_ARROW); RegisterClassA(&cls);
     preview=TRUE; monitor_active=TRUE; status_view=VIEW_LOGIN;
-    screen=CreateWindowA(cls.lpszClassName,"Welcome95",WS_POPUP|WS_VISIBLE,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),NULL,NULL,instance,NULL);
+    screen=CreateWindowA(cls.lpszClassName,"Welcome95",WS_POPUP|WS_VISIBLE|WS_CLIPCHILDREN,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),NULL,NULL,instance,NULL);
     login_window=CreateWindowExA(WS_EX_TOPMOST,"STATIC","Synthetic native input",WS_POPUP|WS_VISIBLE,400,350,100,25,NULL,NULL,instance,NULL);
     UpdateWindow(screen);
+    UpdateWindow(GetDlgItem(screen,ID_POWER));
+    check(power_pixels(),"the real welcome power button paints its red icon and blue background");
+    dc=GetDC(GetDlgItem(screen,ID_POWER));
+    PatBlt(dc,0,0,245,29,BLACKNESS); ReleaseDC(GetDlgItem(screen,ID_POWER),dc);
+    InvalidateRect(screen,NULL,FALSE); UpdateWindow(screen);
+    check(power_pixels(),"a parent repaint also repairs stale black pixels in its owner-drawn power button");
     fixture=CreateWindowExA(WS_EX_TOPMOST,"STATIC","White fixture",WS_POPUP|WS_VISIBLE|SS_WHITERECT,0,0,40,40,NULL,NULL,instance,NULL); UpdateWindow(fixture);
     SendMessageA(screen,WM_COMMAND,ID_POWER,0);
     dialog=FindWindowA("Welcome95.PowerChoice",NULL); shade=FindWindowA("Welcome95.PowerShade",NULL);
@@ -118,6 +133,7 @@ void power_test_entry(void)
     SendMessageA(dialog,WM_COMMAND,IDCANCEL,0); pump(30);
     check(!power_dialog_active() && !IsWindow(dialog) && !IsWindow(shade),"Cancel removes both modal windows");
     check(IsWindowEnabled(screen) && IsWindowEnabled(login_window),"Cancel restores exactly the enabled input windows");
+    check(power_pixels(),"Cancel repaints the real power button after removing the dimming snapshot");
     dc=GetDC(fixture); final=GetPixel(dc,10,10); ReleaseDC(fixture,dc);
     check(final==RGB(255,255,255),"Cancel leaves original desktop pixels unchanged");
     SendMessageA(screen,WM_COMMAND,ID_POWER,0);

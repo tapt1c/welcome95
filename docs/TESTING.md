@@ -262,3 +262,29 @@ Windows не должна оказаться под фоном). Пароль н
 `sh tools/build.sh all test-helper` собирает встроенный x86-загрузчик.
 `python3 tests/check_pe.py build/w95boot.exe --bootstrap` проверяет его подсистему
 4.0, три базовые DLL и отсутствие CRT; основной EXE проверяется обычной командой.
+
+
+## Native Edit visibility and owner-drawn button damage
+
+Current suite: 363 checks per resolution (640x480x16, 800x600x24, 1024x768x24).
+The native fixture changes only the child visibility/rectangle or region while
+leaving the outer dialog untouched; all three failed against the previous cache.
+Repair preserves synthetic input and OS-disabled state. A hundred stable checks
+must not change styles or window positions.
+
+The external-provider fixture verifies WindowFromPoint reaches the actual Edit,
+that its own thread receives keyboard focus after a border click, and that a
+canvas repaint queues a real WM_PAINT on that Edit. It never reads real passwords
+or treats the inert provider's OK as authentication.
+
+Power tests use the production WS_CLIPCHILDREN style and inspect real red-icon
+and blue-background pixels, including black damage followed by a parent repaint
+and shade cancellation. Offscreen GDI tests cover a nonzero DRAWITEMSTRUCT origin,
+full/focus-only repaint and preservation of the caller's drawing state.
+
+On real Win95, repeat logoff, click the white field/border and type: caret and
+stars must appear. Check wrong-password/retry, cancel the power dialog repeatedly,
+cover/uncover the window and change resolution. Check the real power button icon
+and text, not only clickability. If rendering still differs, compare the geometry,
+clipping and hit-class metadata in welcome95-diagnostics.txt. Video/Wine do not
+establish the exact Win95 provider or display-driver message sequence.

@@ -4,6 +4,13 @@
 static HANDLE output;
 static int failures,positions;
 static DWORD canvas_destroyed_at;
+static WNDPROC original_password_proc;
+static DWORD password_paints;
+static LRESULT CALLBACK count_password_paints(HWND window,UINT message,WPARAM wp,LPARAM lp)
+{
+    if(message==WM_PAINT) ++password_paints;
+    return CallWindowProcA(original_password_proc,window,message,wp,lp);
+}
 static char fixture_root[128],fixture_dir[MAX_PATH],fixture_ini[MAX_PATH],fixture_exe[MAX_PATH],source_dir[MAX_PATH];
 static const BYTE test_boot[32]={'M','Z',1,2,3};
 static char service_key[160],run_key[160],once_key[160],backup_key[160],marker[MAX_PATH];
@@ -76,6 +83,20 @@ static BOOL finished(HANDLE process,DWORD timeout)
 static INT_PTR CALLBACK provider_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
 {
     (void)wp; (void)lp;
+    if(message==WM_USER+40) {
+        HWND field=GetDlgItem(hwnd,23);
+        ShowWindow(field,SW_HIDE);
+        SetWindowPos(field,NULL,20,50,150,22,SWP_NOZORDER|SWP_NOACTIVATE);
+        SetWindowRgn(hwnd,NULL,FALSE);
+        return TRUE;
+    }
+    if(message==WM_USER+41) {
+        SetWindowLongPtrA(hwnd,DWLP_MSGRESULT,GetFocus()==GetDlgItem(hwnd,23));
+        return TRUE;
+    }
+    if(message==WM_USER+42) {
+        SetWindowLongPtrA(hwnd,DWLP_MSGRESULT,password_paints); return TRUE;
+    }
     if(message==WM_COMMAND) return TRUE; /* Inert: a click never proves logon. */
     if(message==WM_CLOSE) { DestroyWindow(hwnd); return TRUE; }
     if(message==WM_DESTROY) PostQuitMessage(0);
@@ -117,7 +138,7 @@ void session_test_entry(void)
     HANDLE startup_worker,shell_worker,notifier_worker,notifier_ready,file,provider_worker;
     DWORD start,written,launched,closed_at;
     HDC dc; COLORREF pixel;
-    int i;
+    int i,x,y,width;
 
     instance=GetModuleHandleA(NULL); GetModuleFileNameA(NULL,exe_path,sizeof(exe_path));
     if(*mode) {
@@ -148,6 +169,7 @@ void session_test_entry(void)
             SetWindowTextA(provider,"Welcome95 synthetic provider");
             CreateWindowA("EDIT","First",WS_CHILD|WS_VISIBLE,20,20,150,22,provider,(HMENU)21,instance,NULL);
             CreateWindowA("EDIT","synthetic-only",WS_CHILD|WS_VISIBLE|ES_PASSWORD,20,50,150,22,provider,(HMENU)23,instance,NULL);
+            original_password_proc=(WNDPROC)SetWindowLongPtrA(GetDlgItem(provider,23),GWLP_WNDPROC,(LONG_PTR)count_password_paints);
             CreateWindowA("BUTTON","OK",WS_CHILD|WS_VISIBLE,180,20,60,22,provider,(HMENU)IDOK,instance,NULL);
             CreateWindowA("BUTTON","Cancel",WS_CHILD|WS_VISIBLE,180,50,60,22,provider,(HMENU)IDCANCEL,instance,NULL);
             ShowWindow(provider,SW_SHOW);
@@ -284,6 +306,29 @@ void session_test_entry(void)
     allow_logon();
     check(native_logon_attached() && login_window==provider,
         "the repeated login attaches real controls owned by a separate synthetic provider process");
+    {
+        HWND field=GetDlgItem(provider,23); POINT hit; RECT rectangle; DWORD_PTR reply=0;
+        SendMessageA(provider,WM_USER+40,0,0);
+        allow_logon(); maintain_topmost(screen); pump(60);
+        GetWindowRect(field,&rectangle); hit.x=rectangle.left+8; hit.y=rectangle.top+8;
+        check(IsWindowVisible(field) && WindowFromPoint(hit)==field,
+            "a refreshed cross-process password Edit is visible and receives mouse hit tests above the canvas");
+        login_geometry(&x,&y,&width);
+        check(rectangle.left==x && rectangle.top==y && rectangle.right-rectangle.left==width-60 && rectangle.bottom-rectangle.top==22,
+            "the repaired cross-process Edit occupies the actual welcome password rectangle");
+        SetForegroundWindow(screen);
+        SendMessageA(screen,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(x-1,y+8)); pump(60);
+        check(SendMessageTimeoutA(provider,WM_USER+41,0,0,SMTO_ABORTIFHUNG,200,&reply) && reply,
+            "the provider thread owns keyboard focus in its repaired native password Edit");
+        {
+            DWORD_PTR before=0;
+            SendMessageTimeoutA(provider,WM_USER+42,0,0,SMTO_ABORTIFHUNG,200,&before);
+            InvalidateRect(screen,NULL,FALSE); UpdateWindow(screen); pump(60);
+            reply=0;
+            check(SendMessageTimeoutA(provider,WM_USER+42,0,0,SMTO_ABORTIFHUNG,200,&reply) && reply>before,
+                "repainting the canvas also queues a real paint on the external provider's password Edit");
+        }
+    }
     SendMessageA(controller,WM_HOTKEY,ID_RESCUE_HOTKEY,0);
     check(rescue_mode && !IsWindowVisible(screen) && IsWindowVisible(provider) &&
         (GetWindowLongA(provider,GWL_STYLE)&WS_CAPTION) && !native_logon_attached(),
