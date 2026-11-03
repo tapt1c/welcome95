@@ -1,9 +1,11 @@
 /* Real cross-process gates, inert shell, private registry/INI; no OS logoff. */
 #include "../src/welcome95.c"
+#include "../src/bootstrap.h"
 static HANDLE output;
 static int failures,positions;
 static DWORD canvas_destroyed_at;
-static char fixture_root[128],fixture_dir[MAX_PATH],fixture_ini[MAX_PATH],fixture_exe[MAX_PATH];
+static char fixture_root[128],fixture_dir[MAX_PATH],fixture_ini[MAX_PATH],fixture_exe[MAX_PATH],source_dir[MAX_PATH];
+static const BYTE test_boot[32]={'M','Z',1,2,3};
 static char service_key[160],run_key[160],once_key[160],backup_key[160],marker[MAX_PATH];
 static void check(BOOL okay,const char *text)
 {
@@ -40,8 +42,10 @@ static void fixture_config(void)
 {
     wsprintfA(service_key,"%s\\Services",fixture_root); wsprintfA(run_key,"%s\\Run",fixture_root);
     wsprintfA(once_key,"%s\\Once",fixture_root); wsprintfA(backup_key,"%s\\Backup",fixture_root);
-    wsprintfA(fixture_ini,"%s\\SYSTEM.INI",fixture_dir); wsprintfA(fixture_exe,"%s\\WELCOME.EXE",fixture_dir);
+    wsprintfA(fixture_ini,"%s\\SYSTEM.INI",fixture_dir); wsprintfA(source_dir,"%s\\\320\340\341\356\367\350\351 \361\362\356\353",fixture_dir);
+    wsprintfA(fixture_exe,"%s\\WELCOME.EXE",source_dir);
     wsprintfA(marker,"%s\\shell.started",fixture_dir);
+    startup_config.boot_directory=fixture_dir; startup_config.boot_image=test_boot; startup_config.boot_size=sizeof(test_boot);
     startup_config.root=HKEY_CURRENT_USER; startup_config.service_key=service_key; startup_config.run_key=run_key;
     startup_config.once_key=once_key; startup_config.backup_key=backup_key; startup_config.executable=fixture_exe;
     startup_config.ini=fixture_ini; startup_config.write_ini=WritePrivateProfileStringA;
@@ -77,6 +81,10 @@ static INT_PTR CALLBACK provider_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp
     if(message==WM_DESTROY) PostQuitMessage(0);
     return FALSE;
 }
+static INT_PTR CALLBACK notice_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
+{
+    (void)hwnd; (void)message; (void)wp; (void)lp; return FALSE;
+}
 static void register_windows(void)
 {
     WNDCLASSA cls;
@@ -85,17 +93,32 @@ static void register_windows(void)
     cls.lpfnWndProc=white_input; cls.lpszClassName="Welcome95.WhiteInput"; RegisterClassA(&cls);
     cls.lpfnWndProc=monitor_proc; cls.lpszClassName="Welcome95.Controller"; RegisterClassA(&cls);
 }
+static void remove_fixture(const char *directory)
+{
+    WIN32_FIND_DATAA data; HANDLE search; char pattern[MAX_PATH],path[MAX_PATH];
+
+    wsprintfA(pattern,"%s\\*",directory); search=FindFirstFileA(pattern,&data);
+    if(search!=INVALID_HANDLE_VALUE) {
+        do {
+            if(!lstrcmpA(data.cFileName,".") || !lstrcmpA(data.cFileName,"..")) continue;
+            wsprintfA(path,"%s\\%s",directory,data.cFileName);
+            if(data.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) { remove_fixture(path); RemoveDirectoryA(path); }
+            else DeleteFileA(path);
+        } while(FindNextFileA(search,&data));
+        FindClose(search);
+    }
+}
 void session_test_entry(void)
 {
     const char *mode=option();
     char temporary[MAX_PATH],original[STARTUP_TEXT],probe_pending[MAX_PATH];
     WNDCLASSA cls;
-    HWND competitor,foreground,old_screen,notifier,provider;
+    HWND competitor,foreground,old_screen,notifier,provider,notice;
     HANDLE startup_worker,shell_worker,notifier_worker,notifier_ready,file,provider_worker;
     DWORD start,written,launched,closed_at;
     HDC dc; COLORREF pixel;
     int i;
-    WIN32_FIND_DATAA data; HANDLE search; char pattern[MAX_PATH],path[MAX_PATH];
+
     instance=GetModuleHandleA(NULL); GetModuleFileNameA(NULL,exe_path,sizeof(exe_path));
     if(*mode) {
         if(!GetEnvironmentVariableA("WELCOME95_TEST_ROOT",fixture_root,sizeof(fixture_root)) ||
@@ -111,6 +134,10 @@ void session_test_entry(void)
             if(!MoveFileA(probe_pending,marker)) ExitProcess(3);
             Sleep(200); ExitProcess(0);
         }
+        if(!lstrcmpA(mode,"/boot-shell")) ExitProcess(bootstrap_forward(HKEY_CURRENT_USER,backup_key,"/shell"));
+        if(!lstrcmpA(mode,"/boot-startup")) ExitProcess(bootstrap_forward(HKEY_CURRENT_USER,backup_key,"/startup"));
+        if(!lstrcmpA(mode,"/shell")) ExitProcess(handoff(TRUE));
+        if(!lstrcmpA(mode,"/startup")) ExitProcess(handoff(FALSE));
         if(!lstrcmpA(mode,"/gate-shell")) ExitProcess(handoff(TRUE));
         if(!lstrcmpA(mode,"/gate-startup")) ExitProcess(handoff(FALSE));
         if(!lstrcmpA(mode,"/provider")) {
@@ -144,7 +171,7 @@ void session_test_entry(void)
     if(!GetTempPathA(MAX_PATH,temporary) || !GetTempFileNameA(temporary,"WSE",0,fixture_dir) ||
        !DeleteFileA(fixture_dir) || !CreateDirectoryA(fixture_dir,NULL)) ExitProcess(2);
     wsprintfA(fixture_root,"Software\\Welcome95.Tests\\Session%lu",GetCurrentProcessId()); fixture_config();
-    if(!CopyFileA(exe_path,fixture_exe,TRUE)) ExitProcess(2);
+    if(!CreateDirectoryA(source_dir,NULL) || !CopyFileA(exe_path,fixture_exe,TRUE)) ExitProcess(2);
     wsprintfA(original,"\"%s\" /probe",exe_path); WritePrivateProfileStringA("boot","shell",original,fixture_ini);
     check(startup_configure(&startup_config,TRUE)==0,"configure only the isolated test shell and startup keys");
     SetEnvironmentVariableA("WELCOME95_TEST_ROOT",fixture_root); SetEnvironmentVariableA("WELCOME95_TEST_DIR",fixture_dir);
@@ -166,6 +193,17 @@ void session_test_entry(void)
     check(GetForegroundWindow()==foreground,"batching priority keeps keyboard focus intact");
     pump(60); positions=0; for(i=0;i<100;++i) maintain_topmost(screen);
     check(!positions,"priority becomes idle again immediately after recovering from a competitor");
+    {
+        DWORD words[32]; DLGTEMPLATE *form=(DLGTEMPLATE *)words;
+        zero_memory(words,sizeof(words)); form->style=WS_POPUP|WS_CAPTION; form->cx=150; form->cy=60;
+        notice=CreateDialogIndirectParamA(instance,form,NULL,notice_proc,0); ShowWindow(notice,SW_SHOW);
+        provider_process=GetCurrentProcessId(); SetForegroundWindow(notice); foreground=GetForegroundWindow();
+        maintain_topmost(screen);
+        check(window_above(notice,screen) && window_above(notice,login_window),
+            "an unowned Windows provider message remains accessible above canvas and input");
+        check(GetForegroundWindow()==foreground,"provider notice priority preserves its existing focus");
+        DestroyWindow(notice); provider_process=0;
+    }
     DestroyWindow(competitor); DestroyWindow(login_window); login_window=NULL; DestroyWindow(screen);
     resident_mode=TRUE; preview=FALSE; prefer_native=FALSE;
     ready_event=CreateEventA(NULL,TRUE,FALSE,READY_EVENT); closed_event=CreateEventA(NULL,TRUE,FALSE,CLOSED_EVENT);
@@ -174,13 +212,18 @@ void session_test_entry(void)
     ResetEvent(ready_event); ResetEvent(closed_event); ResetEvent(logoff_event); ResetEvent(ended_event); ResetEvent(stop_event);
     controller=CreateWindowA("Welcome95.Controller","Test controller",WS_OVERLAPPED,0,0,0,0,NULL,NULL,instance,NULL); KillTimer(controller,TICK);
     begin_logon_cycle(FALSE); KillTimer(screen,TICK); SetEvent(controller_event);
-    startup_worker=worker("/gate-startup"); shell_worker=worker("/gate-shell");
+    startup_worker=worker("/boot-startup"); shell_worker=worker("/boot-shell");
     check(startup_worker && shell_worker,"start real, separate startup and shell gate processes");
     start=GetTickCount();
     while(WaitForSingleObject(ready_event,0)!=WAIT_OBJECT_0 && (DWORD)(GetTickCount()-start)<5000) pump(10);
     check(WaitForSingleObject(ready_event,0)==WAIT_OBJECT_0,"the new session gate publishes readiness to the resident controller");
     SendMessageA(screen,WM_TIMER,TICK,0); start=GetTickCount();
     check(finishing && status_view!=VIEW_LOGIN,"readiness enters the actual welcome loading state");
+    {
+        HWND boot=FindWindowA("Welcome95.Bootstrap",NULL); DWORD_PTR reply=0;
+        check(boot && SendMessageTimeoutA(boot,WM_QUERYENDSESSION,0,0,SMTO_ABORTIFHUNG,500,&reply) && reply,
+            "the bootstrap pumps Windows messages while waiting for its frontend");
+    }
     pump(250); SendMessageA(screen,WM_TIMER,TICK,0);
     check(IsWindow(screen) && GetFileAttributesA(marker)==INVALID_FILE_ATTRIBUTES &&
         WaitForSingleObject(startup_worker,0)==WAIT_TIMEOUT && WaitForSingleObject(shell_worker,0)==WAIT_TIMEOUT,
@@ -241,6 +284,12 @@ void session_test_entry(void)
     allow_logon();
     check(native_logon_attached() && login_window==provider,
         "the repeated login attaches real controls owned by a separate synthetic provider process");
+    SendMessageA(controller,WM_HOTKEY,ID_RESCUE_HOTKEY,0);
+    check(rescue_mode && !IsWindowVisible(screen) && IsWindowVisible(provider) &&
+        (GetWindowLongA(provider,GWL_STYLE)&WS_CAPTION) && !native_logon_attached(),
+        "the hidden controller shortcut restores the real native dialog and hides the canvas");
+    check(WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+        "native rescue never submits credentials or marks authentication complete");
     startup_worker=worker("/gate-startup"); start=GetTickCount();
     while(WaitForSingleObject(ready_event,0)!=WAIT_OBJECT_0 && (DWORD)(GetTickCount()-start)<5000) pump(10);
     SendMessageA(screen,WM_TIMER,TICK,0);
@@ -256,12 +305,7 @@ void session_test_entry(void)
     CloseHandle(ready_event); CloseHandle(closed_event); CloseHandle(logoff_event); CloseHandle(ended_event); CloseHandle(controller_event); CloseHandle(stop_event);
     RegDeleteKeyA(HKEY_CURRENT_USER,service_key); RegDeleteKeyA(HKEY_CURRENT_USER,run_key);
     RegDeleteKeyA(HKEY_CURRENT_USER,once_key); RegDeleteKeyA(HKEY_CURRENT_USER,backup_key); RegDeleteKeyA(HKEY_CURRENT_USER,fixture_root);
-    DeleteFileA(marker); DeleteFileA(fixture_ini); DeleteFileA(fixture_exe);
-    wsprintfA(pattern,"%s\\W95*.BAK",fixture_dir); search=FindFirstFileA(pattern,&data);
-    if(search!=INVALID_HANDLE_VALUE) {
-        do { wsprintfA(path,"%s\\%s",fixture_dir,data.cFileName); DeleteFileA(path); } while(FindNextFileA(search,&data));
-        FindClose(search);
-    }
+    remove_fixture(fixture_dir);
     check(RemoveDirectoryA(fixture_dir),"remove only owned session fixtures");
     SetEnvironmentVariableA("WELCOME95_TEST_ROOT",NULL); SetEnvironmentVariableA("WELCOME95_TEST_DIR",NULL);
     release_ui_fonts(); CloseHandle(output); ExitProcess(failures ? 1 : 0);

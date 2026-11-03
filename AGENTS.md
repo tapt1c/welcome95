@@ -151,3 +151,19 @@ Wine fixtures from actual Win95 boot, service survival and startup ordering.
 Compare executable ownership by file path identity, including Win95 long/8.3
 aliases. GetModuleFileName may return a different path spelling in /shell than
 in Settings. A short-path gate must read the long-path backup and startup entries.
+
+
+## Legacy shell path and rescue
+
+Never assume GetShortPathName removes non-ASCII characters. Production SYSTEM.INI
+must contain only an ASCII 8.3 bootstrap executable, with no arguments; it forwards
+the owner's full ANSI path through Win32. Embed/rebuild/audit build/w95boot.exe as
+resource 300. The same bootstrap routes Run/RunServices/RunOnce. Retain recovery
+helpers, use unique owned directories and preserve the original shell on migration.
+
+Ctrl+Alt+Shift+L is deliberately undisclosed in the product UI. Restore an existing
+native form, hide the canvas and stop z-order enforcement; do not manufacture a
+new credential dialog, submit input or signal readiness/closure as authentication.
+Only start a new welcome cycle on real session signals/provider appearance.
+Stage logs may contain constant stage tags, ticks, PIDs and numeric codes only.
+No paths, command lines, usernames or edit contents in W95START.LOG.

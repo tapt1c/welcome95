@@ -12,3 +12,5 @@
 1003 RCDATA "fonts/ARIAL.TTF"
 1004 RCDATA "fonts/ARIALBI.TTF"
 143 BITMAP "power-logo.bmp"
+
+300 RCDATA "../build/w95boot.exe"

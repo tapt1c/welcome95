@@ -55,12 +55,51 @@ static DWORD gate_command(const StartupConfig *c,char *text)
     DWORD length=GetShortPathNameA(c->executable,path,sizeof(path));
     int i;
     if(!length || length>=sizeof(path) || length+8>=128) return ERROR_FILENAME_EXCED_RANGE;
-    for(i=0;path[i];++i) if(path[i]==' ' || path[i]=='"') return ERROR_INVALID_NAME;
+    for(i=0;path[i];++i) if((BYTE)path[i]>=127 || path[i]==' ' || path[i]=='"') return ERROR_INVALID_NAME;
     wsprintfA(text,"%s /shell",path); return 0;
+}
+static BOOL same_executable(const char *first,const char *second);
+static BOOL ascii_path(const char *text)
+{
+    int i;
+    if(!text[0]) return FALSE;
+    for(i=0;text[i];++i) if((BYTE)text[i]<=32 || (BYTE)text[i]>=127 || text[i]=='"') return FALSE;
+    return TRUE;
+}
+static BOOL boot_path(const StartupConfig *c,char *path)
+{
+    static Entry owner,valid,gate;
+    if(read_string(c,c->backup_key,"Owner",&owner) || !owner.present ||
+       !same_executable(owner.text,c->executable) || read_string(c,c->backup_key,"Valid",&valid) ||
+       !valid.present || lstrcmpA(valid.text,"1") || read_string(c,c->backup_key,"Gate",&gate) ||
+       !gate.present || lstrlenA(gate.text)>=MAX_PATH || !ascii_path(gate.text)) return FALSE;
+    lstrcpyA(path,gate.text); return TRUE;
 }
 static void run_command(const StartupConfig *c,char *text,const char *option)
 {
-    wsprintfA(text,"\"%s\" %s",c->executable,option);
+    char boot[MAX_PATH];
+    wsprintfA(text,"\"%s\" %s",boot_path(c,boot) ? boot : c->executable,option);
+}
+static DWORD deploy_boot(const StartupConfig *c,char *path)
+{
+    char directory[MAX_PATH],short_path[MAX_PATH];
+    HANDLE file;
+    DWORD length,written,error;
+    if(!c->boot_directory || !c->boot_image || !c->boot_size) return ERROR_RESOURCE_DATA_NOT_FOUND;
+    if(!GetTempFileNameA(c->boot_directory,"W95",0,directory)) return GetLastError();
+    if(!DeleteFileA(directory)) return GetLastError();
+    if(!CreateDirectoryA(directory,NULL)) return GetLastError();
+    wsprintfA(path,"%s\\W95BOOT.EXE",directory);
+    length=GetShortPathNameA(directory,short_path,sizeof(short_path));
+    if(!length || length+13>=128 || !ascii_path(short_path)) { error=ERROR_INVALID_NAME; goto failed; }
+    file=CreateFileA(path,GENERIC_WRITE,0,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(file==INVALID_HANDLE_VALUE) { error=GetLastError(); goto failed; }
+    error=WriteFile(file,c->boot_image,c->boot_size,&written,NULL) && written==c->boot_size && FlushFileBuffers(file) ? 0 : ERROR_WRITE_FAULT;
+    CloseHandle(file);
+    if(error) goto failed;
+    wsprintfA(path,"%s\\W95BOOT.EXE",short_path); return 0;
+failed:
+    DeleteFileA(path); RemoveDirectoryA(directory); return error;
 }
 static BOOL same_executable(const char *first,const char *second)
 {
@@ -70,7 +109,7 @@ static BOOL same_executable(const char *first,const char *second)
 }
 static BOOL owned_command(const StartupConfig *c,const char *text,const char *option)
 {
-    char module[MAX_PATH];
+    char module[MAX_PATH],boot[MAX_PATH];
     int index=0;
     BOOL quoted;
     while(*text==' ' || *text=='\t') ++text;
@@ -82,7 +121,8 @@ static BOOL owned_command(const StartupConfig *c,const char *text,const char *op
     module[index]=0;
     if(quoted) { if(*text!='"') return FALSE; ++text; }
     while(*text==' ' || *text=='\t') ++text;
-    return !lstrcmpiA(text,option) && same_executable(module,c->executable);
+    return !lstrcmpiA(text,option) && (same_executable(module,c->executable) ||
+        (boot_path(c,boot) && same_executable(module,boot)));
 }
 static BOOL owns_entry(const StartupConfig *c,const Entry *entry,const char *option)
 {
@@ -172,6 +212,7 @@ BOOL startup_installed(const StartupConfig *c)
     static Entry service,run,shell,original,gate;
     if(backup(c,&original,&gate) || read_shell(c,&shell) || lstrcmpiA(shell.text,gate.text) ||
        read_string(c,c->service_key,VALUE,&service) || read_string(c,c->run_key,VALUE,&run)) return FALSE;
+    if(ascii_path(gate.text) && GetFileAttributesA(gate.text)==INVALID_FILE_ATTRIBUTES) return FALSE;
     if(!service.present || !owned_command(c,service.text,"/welcome")) return FALSE;
     return run.present && owned_command(c,run.text,"/session-ready");
 }
@@ -182,7 +223,7 @@ DWORD startup_configure(const StartupConfig *c,BOOL enable)
     const char *options[3]={"/welcome","/session-ready","/startup"};
     static char gate[STARTUP_TEXT],command[STARTUP_TEXT],recovery[MAX_PATH];
     DWORD error,back_error;
-    BOOL have_backup,replace_backup=FALSE,empty_entries;
+    BOOL have_backup,replace_backup=FALSE,empty_entries,changed_gate=FALSE;
     int i,j;
     keys[0]=c->service_key; keys[1]=c->run_key; keys[2]=c->once_key;
     error=read_shell(c,&shell); if(error) return error;
@@ -204,10 +245,18 @@ DWORD startup_configure(const StartupConfig *c,BOOL enable)
     }
     if(back_error!=0 && back_error!=ERROR_FILE_NOT_FOUND) return back_error;
     if(enable) {
-        error=gate_command(c,gate); if(error) return error;
+        if(have_backup && lstrcmpiA(shell.text,saved_gate.text) && lstrcmpA(shell.text,original.text)) return ERROR_BUSY;
+        if(c->boot_image && c->boot_directory && c->boot_size) {
+            if(have_backup && ascii_path(saved_gate.text) && startup_installed(c)) return 0;
+            error=deploy_boot(c,gate); if(error) return error;
+        } else {
+            error=gate_command(c,gate); if(error) return error;
+        }
         if(have_backup) {
-            if(lstrcmpiA(saved_gate.text,gate) ||
-               (lstrcmpiA(shell.text,gate) && lstrcmpA(shell.text,original.text))) return ERROR_BUSY;
+            changed_gate=TRUE;
+            error=put_string(c,c->backup_key,"Gate",gate);
+            if(!error) error=put_string(c,c->backup_key,"Valid","1");
+            if(error) goto failed;
         } else {
             /* Never back up our own gate as the original shell after a damaged install. */
             if(!lstrcmpiA(shell.text,gate) || self_command(c,shell.text)) return ERROR_INVALID_DATA;
@@ -238,6 +287,7 @@ DWORD startup_configure(const StartupConfig *c,BOOL enable)
         if(error) break;
     }
     if(!error && enable) error=set_shell(c,gate);
+failed:
     if(error) {
         DWORD rollback=0,part;
         for(j=0;j<3;++j) {
@@ -245,9 +295,39 @@ DWORD startup_configure(const StartupConfig *c,BOOL enable)
             if(part) rollback=part;
         }
         part=set_shell(c,shell.present ? shell.text : NULL); if(part) rollback=part;
+        if(changed_gate) {
+            part=put_string(c,c->backup_key,"Gate",saved_gate.text); if(part) rollback=part;
+            part=put_string(c,c->backup_key,"Valid","1"); if(part) rollback=part;
+        }
         return rollback ? ERROR_CAN_NOT_COMPLETE : error;
     }
     /* Keep the original shell backup after Disable, including for an in-flight
        /shell invocation whose SYSTEM.INI command was cached by Windows. */
     return 0;
+}
+
+/* Best-effort bounded metadata journal; no commands, usernames or edit contents. */
+void startup_trace(HKEY root,const char *key,const char *stage,DWORD code)
+{
+    HKEY handle; HANDLE file;
+    char path[MAX_PATH],line[160];
+    DWORD size=sizeof(path),type,written,length;
+    int end;
+    if(RegOpenKeyExA(root,key,0,KEY_QUERY_VALUE,&handle)) return;
+    type=0;
+    if(RegQueryValueExA(handle,"Gate",NULL,&type,(BYTE *)path,&size) || type!=REG_SZ || !size || size>=sizeof(path)) {
+        RegCloseKey(handle); return;
+    }
+    RegCloseKey(handle); path[sizeof(path)-1]=0;
+    /* A legacy Gate contains arguments; the new bootstrap path has none. */
+    end=0; while(path[end] && path[end]!=' ') ++end;
+    while(end && path[end-1]!='\\' && path[end-1]!='/') --end;
+    if(!end || end+13>=MAX_PATH) return;
+    lstrcpyA(path+end,"W95START.LOG");
+    file=CreateFileA(path,GENERIC_WRITE,FILE_SHARE_READ,NULL,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(file==INVALID_HANDLE_VALUE) return;
+    length=SetFilePointer(file,0,NULL,FILE_END);
+    if(length>65536) { SetFilePointer(file,0,NULL,FILE_BEGIN); SetEndOfFile(file); }
+    wsprintfA(line,"%lu pid=%lu %s code=%lu\r\n",GetTickCount(),GetCurrentProcessId(),stage,code);
+    WriteFile(file,line,(DWORD)lstrlenA(line),&written,NULL); CloseHandle(file);
 }

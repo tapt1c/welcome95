@@ -219,3 +219,37 @@ Implementation and DOS recovery: docs/BOOT_FLOW.md.
 The old Run-only limitations above describe earlier versions; the current startup
 model uses RunOnce plus a shell proxy. System services and unrelated RunOnce jobs
 are not deferred by the welcome gate.
+
+
+## Win95 login stall after shell replacement; non-ASCII desktop (current)
+
+Evidence: a 40.75s recording shows responsive power UI but login never reaches the
+welcome loading state. The user restored the previous SYSTEM.INI shell and login
+worked again while delay disappeared. This localizes the regression to the shell
+startup path, not a proven password-handler freeze. Restored shell makes enabled()
+false and reactivates the old Run readiness signal, explaining loss of delay.
+The main EXE was in Russian "Рабочий стол". The old gate assumed a short filename
+was safe for the legacy loader; 8.3 is not an ASCII guarantee. Video alone does
+not distinguish all OEM/ANSI, argument or loader-wait details on the actual VM.
+
+Implemented an embedded i386 bootstrap deployed to a unique ASCII 8.3 directory
+on the Windows drive. SYSTEM.INI points only to that executable, with no args.
+It reads the owner through Win32 registry APIs and launches its full ANSI path
+through CreateProcessA. All three startup entries also use the ASCII trampoline.
+The bootstrap pumps messages during synchronous startup/shell waits. Original
+shell backups, migration/rollback and post-close delay remain intact. Startup
+errors release the overlay and show a visible error; bounded stage metadata is
+written beside the bootstrap. No credentials or paths are logged.
+
+The requested hidden Ctrl+Alt+Shift+L restores the existing native form and hides
+the canvas without a fake logon or sending input. It is intentionally absent from
+the UI. Same-provider unowned notices remain above canvas and input too.
+
+Validation: 346 Wine checks per resolution, including 40 install/path cases and
+38 real cross-process/bootstrap/rescue checks. Tests use private HKCU/INI paths,
+ANSI non-ASCII bytes/spaces and an inert shell. Both production PE images compile
+as i386/Windows 4.0 without CRT; the bootstrap imports only three baseline DLLs.
+
+- [ ] Repeat the exact CP1251 Win95 desktop path and inspect W95START.LOG.
+- [ ] Confirm real legacy-loader startup, delay, logoff and power cancellation.
+- [ ] Verify physical Ctrl+Alt+Shift+L, native wrong-password and provider notices.

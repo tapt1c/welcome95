@@ -54,13 +54,28 @@ static BOOL recovery_matches(const char *key,const char *shell)
     CloseHandle(file); data[read]=0; wsprintfA(expected,"[boot]\r\nshell=%s\r\n",shell);
     return read>0 && !lstrcmpA(data,expected);
 }
+static void remove_fixture(const char *directory)
+{
+    WIN32_FIND_DATAA data; HANDLE search; char pattern[MAX_PATH],path[MAX_PATH];
+    wsprintfA(pattern,"%s\\*",directory); search=FindFirstFileA(pattern,&data);
+    if(search!=INVALID_HANDLE_VALUE) {
+        do {
+            if(!lstrcmpA(data.cFileName,".") || !lstrcmpA(data.cFileName,"..")) continue;
+            wsprintfA(path,"%s\\%s",directory,data.cFileName);
+            if(data.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) { remove_fixture(path); RemoveDirectoryA(path); }
+            else DeleteFileA(path);
+        } while(FindNextFileA(search,&data));
+        FindClose(search);
+    }
+}
 void startup_test_entry(void)
 {
     static char temporary[MAX_PATH],directory[MAX_PATH],executable[MAX_PATH],copy[MAX_PATH],ini[MAX_PATH];
     static char base[128],service[160],run[160],once[160],backup[160],command[STARTUP_TEXT],saved[STARTUP_TEXT],other[32];
     StartupConfig config;
-    WIN32_FIND_DATAA data; HANDLE search;
-    char pattern[MAX_PATH],path[MAX_PATH],alias[MAX_PATH];
+    char alias[MAX_PATH],source_dir[MAX_PATH],source_exe[MAX_PATH];
+    static const BYTE boot_image[32]={'M','Z',1,2,3};
+    int index; BOOL ascii; DWORD result;
     output=CreateFileA("startup-test.log",GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
     if(output==INVALID_HANDLE_VALUE) ExitProcess(2);
     if(!GetTempPathA(MAX_PATH,temporary) || !GetTempFileNameA(temporary,"WST",0,directory) ||
@@ -71,6 +86,7 @@ void startup_test_entry(void)
     wsprintfA(base,"Software\\Welcome95.Tests\\Startup%lu",GetCurrentProcessId());
     wsprintfA(service,"%s\\Services",base); wsprintfA(run,"%s\\Run",base);
     wsprintfA(once,"%s\\Once",base); wsprintfA(backup,"%s\\Backup",base);
+    config.boot_directory=NULL; config.boot_image=NULL; config.boot_size=0;
     config.root=HKEY_CURRENT_USER; config.service_key=service; config.run_key=run;
     config.once_key=once; config.backup_key=backup; config.executable=copy; config.ini=ini; config.write_ini=test_write;
     WritePrivateProfileStringA("boot","shell","EXPLOR95.EXE /desktop",ini);
@@ -128,13 +144,41 @@ void startup_test_entry(void)
     WritePrivateProfileStringA("boot","shell",NULL,ini);
     check(startup_configure(&config,TRUE)==0 && startup_original(&config,saved,sizeof(saved))==0 && !lstrcmpA(saved,"Explorer.exe"),"an absent shell key preserves Windows' default shell semantics");
     check(startup_configure(&config,FALSE)==0 && equal_shell(ini,NULL),"Disable restores an originally absent shell key as absent");
+    wsprintfA(source_dir,"%s\\\320\340\341\356\367\350\351 \361\362\356\353",directory);
+    wsprintfA(source_exe,"%s\\welcome95.exe",source_dir);
+    if(!CreateDirectoryA(source_dir,NULL) || !CopyFileA(executable,source_exe,TRUE)) ExitProcess(2);
+    config.executable=source_exe;
+    GetShortPathNameA(source_exe,alias,sizeof(alias)); ascii=TRUE;
+    for(index=0;alias[index];++index) if((BYTE)alias[index]>=127) ascii=FALSE;
+    result=startup_configure(&config,TRUE);
+    check(ascii ? result==0 : result==ERROR_INVALID_NAME,"legacy direct shell requires an ASCII alias rather than assuming every short path is ASCII");
+    if(!result) startup_configure(&config,FALSE);
+    /* Exact migration scenario: old metadata/Run entries, with shell manually restored. */
+    value(backup,"Owner",source_exe); value(backup,"OriginalShell","Explorer.exe"); value(backup,"HadShell","0"); value(backup,"Valid","1");
+    GetShortPathNameA(source_exe,command,sizeof(command)); lstrcatA(command," /shell"); value(backup,"Gate",command);
+    wsprintfA(saved,"\"%s\" /welcome",source_exe); value(service,"Welcome95",saved);
+    wsprintfA(saved,"\"%s\" /session-ready",source_exe); value(run,"Welcome95",saved);
+    wsprintfA(saved,"\"%s\" /startup",source_exe); value(once,"Welcome95",saved);
+    config.boot_directory=directory; config.boot_image=boot_image; config.boot_size=sizeof(boot_image);
+    fail_ini=1;
+    check(startup_configure(&config,TRUE)!=0 && equal_value(backup,"Gate",command) && equal_shell(ini,NULL),
+        "failed migration restores the legacy gate and the manually recovered shell");
+    check(startup_configure(&config,TRUE)==0 && startup_installed(&config),"install from an ANSI non-ASCII desktop path through an ASCII bootstrap");
+    GetPrivateProfileStringA("boot","shell","",command,sizeof(command),ini);
+    ascii=TRUE; for(index=0;command[index];++index) if((BYTE)command[index]>=127 || command[index]==' ') ascii=FALSE;
+    check(ascii && lstrlenA(command)<128 && GetFileAttributesA(command)!=INVALID_FILE_ATTRIBUTES,
+        "SYSTEM.INI receives only an existing ASCII 8.3 executable with no arguments");
+    wsprintfA(saved,"\"%s\" /welcome",command);
+    check(equal_value(service,"Welcome95",saved),"RunServices also uses the ASCII trampoline rather than the desktop path");
+    wsprintfA(saved,"\"%s\" /startup",command);
+    check(startup_rearm(&config)==0 && equal_value(once,"Welcome95",saved),"RunOnce rearming preserves ASCII bootstrap routing");
+    check(startup_original(&config,saved,sizeof(saved))==0 && !lstrcmpA(saved,"Explorer.exe"),"bootstrap migration preserves the original shell backup");
+    check(startup_configure(&config,TRUE)==0 && equal_shell(ini,command),"repeated Enable reuses the active bootstrap");
+    check(startup_configure(&config,FALSE)==0 && equal_shell(ini,NULL) && equal_value(service,"Welcome95",NULL),
+        "Disable restores the original shell after bootstrap migration");
     RegDeleteKeyA(HKEY_CURRENT_USER,service); RegDeleteKeyA(HKEY_CURRENT_USER,run);
     RegDeleteKeyA(HKEY_CURRENT_USER,once); RegDeleteKeyA(HKEY_CURRENT_USER,backup); RegDeleteKeyA(HKEY_CURRENT_USER,base);
-    wsprintfA(pattern,"%s\\W95*.BAK",directory); search=FindFirstFileA(pattern,&data);
-    if(search!=INVALID_HANDLE_VALUE) {
-        do { wsprintfA(path,"%s\\%s",directory,data.cFileName); DeleteFileA(path); } while(FindNextFileA(search,&data));
-        FindClose(search);
-    }
-    check(DeleteFileA(ini) && DeleteFileA(copy) && RemoveDirectoryA(directory),"remove only private startup fixtures");
+    remove_fixture(directory);
+    check(RemoveDirectoryA(directory),"remove only private startup fixtures");
     CloseHandle(output); ExitProcess(failures ? 1 : 0);
 }

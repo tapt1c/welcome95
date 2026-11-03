@@ -29,6 +29,8 @@ else
 fi
 resource_compiler="$(dirname "$compiler")/x86_64-w64-mingw32-windres"
 if command -v x86_64-w64-mingw32-windres >/dev/null 2>&1; then resource_compiler=x86_64-w64-mingw32-windres; fi
+sh tools/build.sh build/w95boot.exe
+python3 tests/check_pe.py build/w95boot.exe --bootstrap
 make test-helper64 TEST_CC="$compiler" TEST_WINDRES="$resource_compiler"
 rm -f native-logon-test.log topmost-test.log fonts-test.log profiles-test.log render-test.log power-test.log dos-test.log layout-test.log startup-test.log session-test.log build/test-display
 "$xvfb" -displayfd 3 -screen 0 "${WELCOME95_TEST_SCREEN:-800x600x24}" -nolisten tcp \

@@ -36,12 +36,12 @@ build/topmost_test64.exe: tests/topmost_test.c src/welcome95.c src/native_logon.
 clean:
 	rm -rf build
 
-build/assets.o: assets/welcome95.rc $(wildcard assets/*.bmp) $(wildcard assets/fonts/*.TTF)
+build/assets.o: build/w95boot.exe assets/welcome95.rc $(wildcard assets/*.bmp) $(wildcard assets/fonts/*.TTF)
 	mkdir -p build
 	$(WINDRES) --preprocessor="$(CC)" --preprocessor-arg=-E --preprocessor-arg=-xc --preprocessor-arg=-DRC_INVOKED -I assets assets/welcome95.rc -O coff -o $@
 
 TEST_WINDRES = x86_64-w64-mingw32-windres
-build/assets64.o: assets/welcome95.rc $(wildcard assets/*.bmp) $(wildcard assets/fonts/*.TTF)
+build/assets64.o: build/w95boot.exe assets/welcome95.rc $(wildcard assets/*.bmp) $(wildcard assets/fonts/*.TTF)
 	mkdir -p build
 	$(TEST_WINDRES) --preprocessor="$(TEST_CC)" --preprocessor-arg=-E --preprocessor-arg=-xc --preprocessor-arg=-DRC_INVOKED -I assets assets/welcome95.rc -O coff -o $@
 
@@ -70,5 +70,9 @@ build/layout_test64.exe: tests/layout_test.c src/welcome95.c $(POWER_SOURCES) $(
 build/startup_test64.exe: tests/startup_test.c src/startup.c src/startup.h Makefile
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/startup_test.c src/startup.c -o $@ -mwindows -nostdlib -Wl,--entry,startup_test_entry -luser32 -ladvapi32 -lkernel32
 
-build/session_test64.exe: tests/session_test.c src/welcome95.c $(POWER_SOURCES) $(wildcard src/*.h) build/assets64.o Makefile
-	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/session_test.c $(POWER_SOURCES) build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,session_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
+build/session_test64.exe: src/bootstrap.c src/bootstrap.h tests/session_test.c src/welcome95.c $(POWER_SOURCES) $(wildcard src/*.h) build/assets64.o Makefile
+	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/session_test.c src/bootstrap.c -DWELCOME95_BOOTSTRAP_NO_ENTRY $(POWER_SOURCES) build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,session_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
+
+
+build/w95boot.exe: src/bootstrap.c src/bootstrap.h src/startup.c src/startup.h Makefile
+	$(CC) $(CFLAGS) src/bootstrap.c src/startup.c -o $@ $(LDFLAGS) -Wl,--entry,_boot_entry -luser32 -ladvapi32 -lkernel32

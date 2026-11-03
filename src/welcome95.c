@@ -34,6 +34,7 @@
 #define ID_PREVIEW_MULTI 112
 #define ID_PREVIEW_SHUTDOWN 113
 #define ID_PROFILE_SCROLL 114
+#define ID_RESCUE_HOTKEY 3
 #define VIEW_LOGIN 0
 #define VIEW_WELCOME_SINGLE 1
 #define VIEW_WELCOME_MULTI 2
@@ -57,7 +58,8 @@ static DWORD provider_process;
 typedef DWORD (WINAPI *RegisterService)(DWORD,DWORD);
 static RegisterService register_service;
 static StartupConfig startup_config;
-static char system_ini[MAX_PATH];
+static char system_ini[MAX_PATH],boot_directory[4];
+static BOOL rescue_mode;
 static BOOL preview, finishing;
 static DWORD finish_time;
 static HWND login_window;
@@ -146,6 +148,15 @@ static void initialize_startup(void)
     UINT length=GetWindowsDirectoryA(system_ini,sizeof(system_ini));
     if(!length || length+12>=sizeof(system_ini)) system_ini[0]=0;
     else lstrcatA(system_ini,"\\SYSTEM.INI");
+    startup_config.boot_directory=NULL; startup_config.boot_image=NULL; startup_config.boot_size=0;
+    if(length>=3 && system_ini[1]==':' && system_ini[2]=='\\') {
+        HRSRC resource=FindResourceA(instance,MAKEINTRESOURCEA(300),MAKEINTRESOURCEA(10));
+        HGLOBAL data=resource ? LoadResource(instance,resource) : NULL;
+        boot_directory[0]=system_ini[0]; boot_directory[1]=':'; boot_directory[2]='\\'; boot_directory[3]=0;
+        startup_config.boot_directory=boot_directory;
+        startup_config.boot_image=data ? (const BYTE *)LockResource(data) : NULL;
+        startup_config.boot_size=resource ? SizeofResource(instance,resource) : 0;
+    }
     startup_config.root=HKEY_LOCAL_MACHINE;
     startup_config.service_key=STARTUP_SERVICE; startup_config.run_key=STARTUP_RUN;
     startup_config.once_key=STARTUP_ONCE; startup_config.backup_key=STARTUP_BACKUP;
@@ -161,6 +172,9 @@ static BOOL configure(HWND owner,BOOL enable)
         error_box(owner,"Automatic startup is intended for Windows 95/98/Me. Preview is available on other systems."); return FALSE;
     }
     if(!system_ini[0]) { error_box(owner,"Cannot locate SYSTEM.INI. No startup changes made."); return FALSE; }
+    if(enable && (!startup_config.boot_directory || !startup_config.boot_image || !startup_config.boot_size)) {
+        error_box(owner,"Cannot load the Windows 95 bootstrap. No startup changes made."); return FALSE;
+    }
     error=startup_configure(&startup_config,enable);
     if(error) {
         wsprintfA(message,"Cannot update Welcome95 startup (error %lu).\r\nThe previous shell backup is retained. Check ownership and SYSTEM.INI before retrying.",error);
@@ -185,7 +199,11 @@ static DWORD handoff(BOOL launch_shell)
     DWORD error=0,waited,started=GetTickCount();
     DWORD_PTR result;
     HWND target;
-    if(launch_shell) { error=startup_original(&startup_config,original,sizeof(original)); if(error) return error; }
+    startup_trace(startup_config.root,startup_config.backup_key,launch_shell ? "handoff-shell" : "handoff-startup",0);
+    if(launch_shell) {
+        error=startup_original(&startup_config,original,sizeof(original));
+        if(error) { startup_trace(startup_config.root,startup_config.backup_key,"original-shell-error",error); return error; }
+    }
     if(!enabled()) goto launch;
     ready=CreateEventA(NULL,TRUE,FALSE,READY_EVENT);
     closed=CreateEventA(NULL,TRUE,FALSE,CLOSED_EVENT);
@@ -212,6 +230,7 @@ static DWORD handoff(BOOL launch_shell)
             error=ERROR_INVALID_WINDOW_HANDLE;
     }
     if(!error) {
+        startup_trace(startup_config.root,startup_config.backup_key,"handoff-wait-close",0);
         do {
             waited=WaitForSingleObject(closed,20);
             if(waited==WAIT_OBJECT_0) break;
@@ -221,6 +240,7 @@ static DWORD handoff(BOOL launch_shell)
         } while(TRUE);
     }
     /* Fail open on a broken controller, never leave the machine without a shell. */
+    startup_trace(startup_config.root,startup_config.backup_key,"handoff-wait-result",error);
     if(error && stop) SetEvent(stop);
     if(ready) CloseHandle(ready);
     if(closed) CloseHandle(closed);
@@ -229,7 +249,10 @@ static DWORD handoff(BOOL launch_shell)
 launch:
     if(!launch_shell) return 0;
     zero_memory(&startup,sizeof(startup)); startup.cb=sizeof(startup);
-    if(!CreateProcessA(NULL,original,NULL,NULL,FALSE,0,NULL,NULL,&startup,&child)) return GetLastError();
+    if(!CreateProcessA(NULL,original,NULL,NULL,FALSE,0,NULL,NULL,&startup,&child)) {
+        error=GetLastError(); startup_trace(startup_config.root,startup_config.backup_key,"shell-create-error",error); return error;
+    }
+    startup_trace(startup_config.root,startup_config.backup_key,"shell-started",child.dwProcessId);
     target=FindWindowA("Welcome95.Controller",NULL);
     if(target) SendMessageTimeoutA(target,SHELL_STARTED,child.dwProcessId,0,SMTO_ABORTIFHUNG,200,&result);
     CloseHandle(child.hThread); CloseHandle(child.hProcess);
@@ -612,6 +635,24 @@ static void allow_logon(void)
     InvalidateRect(screen, NULL, FALSE);
 }
 
+static BOOL CALLBACK find_provider_notice(HWND window,LPARAM parameter)
+{
+    DWORD process=0; char name[24]; BOOL password=FALSE;
+    if(window==login_window || !IsWindowVisible(window) || !IsWindowEnabled(window)) return TRUE;
+    GetWindowThreadProcessId(window,&process);
+    if(!provider_process || process!=provider_process) return TRUE;
+    GetClassNameA(window,name,sizeof(name)); if(lstrcmpA(name,"#32770")) return TRUE;
+    EnumChildWindows(window,password_child,(LPARAM)&password);
+    if(password) return TRUE;
+    *(HWND *)parameter=window; return FALSE;
+}
+static HWND provider_notice(HWND input)
+{
+    HWND popup=input ? GetLastActivePopup(input) : NULL;
+    if(popup && popup!=input && IsWindowVisible(popup)) return popup;
+    popup=NULL; if(provider_process) EnumWindows(find_provider_notice,(LPARAM)&popup);
+    return popup;
+}
 static BOOL window_above(HWND first,HWND second)
 {
     HWND window=GetTopWindow(NULL);
@@ -628,13 +669,12 @@ static void maintain_topmost(HWND hwnd)
     HDWP batch;
     BOOL correct;
     UINT flags=SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER;
-    if(power_dialog_active() || status_view==VIEW_SHUTDOWN) return;
+    if(rescue_mode || power_dialog_active() || status_view==VIEW_SHUTDOWN) return;
     if(status_view==VIEW_LOGIN && login_window && IsWindowVisible(login_window) &&
        (native_logon_attached() || prefer_native)) {
         input=login_window;
-        popup=GetLastActivePopup(input);
-        if(popup==input || !IsWindowVisible(popup)) popup=NULL;
     }
+    if(status_view==VIEW_LOGIN) popup=provider_notice(input);
     correct=(GetWindowLongA(hwnd,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0;
     if(input && (!(GetWindowLongA(input,GWL_EXSTYLE)&WS_EX_TOPMOST) || !window_above(input,hwnd))) correct=FALSE;
     if(popup && (!(GetWindowLongA(popup,GWL_EXSTYLE)&WS_EX_TOPMOST) || !window_above(popup,input))) correct=FALSE;
@@ -654,11 +694,13 @@ static void maintain_topmost(HWND hwnd)
 }
 
 static void begin_logon_cycle(BOOL reset);
+static void rescue_native_logon(void);
 static void release_ui_fonts(void);
 static void close_canvas(void)
 {
     if(screen && IsWindow(screen)) DestroyWindow(screen);
     if(closed_event) SetEvent(closed_event); /* after DestroyWindow has returned */
+    startup_trace(startup_config.root,startup_config.backup_key,"canvas-closed",0);
 }
 static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp)
 {
@@ -802,7 +844,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         }
         if (preview_status && (DWORD)(GetTickCount()-preview_started) >= 5000) { DestroyWindow(hwnd); return 0; }
         if (status_view != VIEW_LOGIN) { maintain_topmost(hwnd); return 0; }
-        if (servicing_logon) return 0;
+        if (rescue_mode || servicing_logon) return 0;
         servicing_logon = TRUE;
         allow_logon();
         if (pending_profile && native_logon_attached() && (LONG)(GetTickCount()-next_profile_attempt) >= 0) {
@@ -865,6 +907,7 @@ static void begin_logon_cycle(BOOL reset)
     shell_process=NULL; session_running=FALSE; awaiting_logon=FALSE;
     power_requested=FALSE; ending_unknown=FALSE; shutdown_only_canvas=FALSE;
     finishing=FALSE; prefer_native=FALSE; pending_profile=FALSE; servicing_logon=FALSE;
+    rescue_mode=FALSE;
     automatic_attempted=FALSE; compact_selected=FALSE; selected_profile=profile_page=0;
     next_logon_attempt=next_profile_attempt=0; status_view=VIEW_LOGIN;
     profiles_load();
@@ -876,16 +919,46 @@ static void begin_logon_cycle(BOOL reset)
     else { if(stop_event) SetEvent(stop_event); if(closed_event) SetEvent(closed_event); }
     if(enabled()) startup_rearm(&startup_config);
 }
+static void rescue_native_logon(void)
+{
+    HWND found=NULL,popup;
+    power_dialog_close();
+    if(!screen && awaiting_logon) begin_logon_cycle(TRUE);
+    if(screen) {
+        rescue_mode=TRUE; prefer_native=TRUE;
+        login_hotkeys(screen,FALSE);
+        native_logon_restore(FALSE);
+        ShowWindow(screen,SW_HIDE);
+    }
+    if(login_window && IsWindow(login_window) && IsWindowVisible(login_window)) found=login_window;
+    else EnumWindows(find_logon,(LPARAM)&found);
+    if(found) {
+        GetWindowThreadProcessId(found,&provider_process);
+        SetWindowPos(found,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+        popup=provider_notice(found);
+        if(popup && popup!=found && IsWindowVisible(popup)) found=popup;
+        SetForegroundWindow(found);
+    }
+    startup_trace(startup_config.root,startup_config.backup_key,"native-rescue",found ? 0 : ERROR_NOT_FOUND);
+    /* Never create a fake credential dialog, submit input or mark a session ready. */
+}
 static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp)
 {
     switch(message) {
-    case WM_CREATE: SetTimer(hwnd,TICK,resident_mode ? 100 : 250,NULL); return 0;
+    case WM_CREATE:
+        SetTimer(hwnd,TICK,resident_mode ? 100 : 250,NULL);
+        if(resident_mode) RegisterHotKey(hwnd,ID_RESCUE_HOTKEY,MOD_CONTROL|MOD_ALT|MOD_SHIFT,'L');
+        return 0;
+    case WM_HOTKEY:
+        if(resident_mode && wp==ID_RESCUE_HOTKEY) rescue_native_logon();
+        return 0;
     case SESSION_STARTING:
         if(!resident_mode) return FALSE;
         /* Serialize a fast new login with pending end-session notifications.
            Reset old acknowledgements before publishing this cycle's readiness. */
         if(awaiting_logon || WaitForSingleObject(logoff_event,0)==WAIT_OBJECT_0 ||
            (ended_event && WaitForSingleObject(ended_event,0)==WAIT_OBJECT_0)) begin_logon_cycle(TRUE);
+        startup_trace(startup_config.root,startup_config.backup_key,"session-starting",0);
         SetEvent(ready_event); return TRUE;
     case SHELL_STARTED:
         if(resident_mode) {
@@ -951,7 +1024,9 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             CloseHandle(ready_event); ready_event=NULL;
         }
         return 0;
-    case WM_DESTROY: KillTimer(hwnd,TICK); PostQuitMessage(0); return 0;
+    case WM_DESTROY:
+        if(resident_mode) UnregisterHotKey(hwnd,ID_RESCUE_HOTKEY);
+        KillTimer(hwnd,TICK); PostQuitMessage(0); return 0;
     }
     return DefWindowProcA(hwnd,message,wp,lp);
 }
@@ -1044,7 +1119,11 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
         DWORD error;
         if(!(GetVersion()&0x80000000UL)) return 1;
         error=handoff(!lstrcmpiA(arguments,"/shell"));
-        if(error) error_box(NULL,"Welcome95 cannot start the saved shell. Restore SYSTEM.INI [boot] shell from the Welcome95 backup or use Disable.");
+        if(error) {
+            HANDLE event=OpenEventA(EVENT_MODIFY_STATE,FALSE,STOP_EVENT);
+            if(event) { SetEvent(event); CloseHandle(event); }
+            MessageBoxA(NULL,"Welcome95 cannot start the saved shell. Restore SYSTEM.INI [boot] shell from the Welcome95 backup or use Disable.",APP,MB_OK|MB_ICONERROR|MB_TOPMOST);
+        }
         return error ? 1 : 0;
     }
     session_monitor = !lstrcmpiA(arguments, "/session-ready");
