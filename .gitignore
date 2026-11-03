@@ -4,3 +4,5 @@
 __pycache__/
 /native-logon-test.log
 /topmost-test.log
+
+/fonts-test.log

@@ -65,3 +65,16 @@ origin is documented in assets/README.md. Do not execute or redistribute the
 uploaded XP executable. Keep one shared, scaled layout for rendering and hit tests.
 Prefer clear Russian user updates. Report what changed, what was tested, and any
 remaining target-system uncertainty. Publish only within user-authorized scope.
+
+## Session status screens and fonts
+
+The lone/multiple-account welcome states follow session-ready; they never bypass
+password entry. /session-ready is a hidden observer after signalling the startup
+canvas. It must approve shutdown queries, handle cancellation, exit normally on
+committed end-session, and release its font resources. Do not claim unknown OS
+shutdown phases as observed events. Preview states must never call ExitWindowsEx.
+
+Use the supplied TTF resources via src/fonts.c. Do not install fonts permanently,
+overwrite user files, or introduce NT-only private-font APIs. Unique temporary
+files belong to the process; unregister only resources it loaded. Keep metadata
+and ownership notices intact. Font versions 7.x are not the original XP versions.

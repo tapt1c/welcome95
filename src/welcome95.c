@@ -2,6 +2,7 @@
 #include <windows.h>
 #include "native_logon.h"
 #include "profiles.h"
+#include "fonts.h"
 
 #define APP "Welcome95"
 #define REG_SERVICE "Software\\Microsoft\\Windows\\CurrentVersion\\RunServices"
@@ -19,11 +20,22 @@
 #define ID_POWER 108
 #define ID_PREV 109
 #define ID_NEXT 110
+#define ID_PREVIEW_SINGLE 111
+#define ID_PREVIEW_MULTI 112
+#define ID_PREVIEW_SHUTDOWN 113
+#define VIEW_LOGIN 0
+#define VIEW_WELCOME_SINGLE 1
+#define VIEW_WELCOME_MULTI 2
+#define VIEW_SHUTDOWN 3
 #define TICK 1
 
 static HINSTANCE instance;
 static HWND screen;
-static HFONT title_font, body_font, small_font;
+static HFONT title_font, body_font, small_font, welcome_font, status_font;
+static int status_view;
+static BOOL monitor_active, preview_status;
+static DWORD preview_started, monitor_started;
+static HANDLE monitor_instance;
 static HANDLE ready_event, stop_event, running_event;
 static BOOL preview, finishing;
 static DWORD finish_time;
@@ -220,6 +232,60 @@ static void rounded(HDC dc, RECT area, COLORREF color, COLORREF edge)
     DeleteObject(brush); DeleteObject(pen);
 }
 
+static int font_pixels(int points)
+{
+    HDC dc = GetDC(NULL);
+    int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSY) : 96;
+    if (dc) ReleaseDC(NULL, dc);
+    return MulDiv(points, dpi > 0 ? dpi : 96, 72);
+}
+static BOOL russian_ui(void)
+{
+    return GetACP() == 1251 && PRIMARYLANGID(GetSystemDefaultLangID()) == LANG_RUSSIAN;
+}
+static const char *welcome_text(void)
+{
+    return russian_ui() ? "\317\360\350\342\345\362\361\362\342\350\345" : "welcome";
+}
+static void paint_greeting(HDC dc, int left, int right)
+{
+    RECT text;
+    UINT align = right == 370 ? DT_RIGHT : DT_CENTER;
+    SetRect(&text, sx(left+2), sy(267+3), sx(right+2), sy(330+3));
+    SetTextColor(dc, RGB(49,81,181));
+    label(dc, welcome_font, welcome_text(), text, align | DT_VCENTER | DT_SINGLELINE);
+    OffsetRect(&text, -sx(2), -sy(3));
+    SetTextColor(dc, RGB(239,247,255));
+    label(dc, welcome_font, welcome_text(), text, align | DT_VCENTER | DT_SINGLELINE);
+}
+static void paint_logo(HDC dc, int x, int y)
+{
+    RECT suffix;
+    bitmap(dc, 123, sx(x), sy(y), sx(137), sy(86));
+    SetRect(&suffix, sx(x+115), sy(y+54), sx(x+141), sy(y+86));
+    fill(dc, suffix, RGB(90,126,220));
+    SetTextColor(dc, RGB(255,156,33));
+    label(dc, body_font, "95", suffix, DT_LEFT | DT_SINGLELINE);
+    SetTextColor(dc, RGB(255,255,255));
+}
+static void set_status_view(HWND hwnd, int view)
+{
+    static const int controls[] = { ID_NATIVE, ID_SUBMIT, ID_POWER, ID_PREV, ID_NEXT, ID_DONE, 201 };
+    unsigned int index;
+    status_view = view;
+    if (view != VIEW_LOGIN) {
+        for (index = 0; index < sizeof(controls)/sizeof(controls[0]); ++index)
+            ShowWindow(GetDlgItem(hwnd, controls[index]), SW_HIDE);
+    } else {
+        ShowWindow(GetDlgItem(hwnd, ID_SUBMIT), SW_SHOWNA);
+        ShowWindow(GetDlgItem(hwnd, ID_POWER), SW_SHOWNA);
+        ShowWindow(GetDlgItem(hwnd, ID_PREV), profiles_count()>4 ? SW_SHOWNA : SW_HIDE);
+        ShowWindow(GetDlgItem(hwnd, ID_NEXT), profiles_count()>4 ? SW_SHOWNA : SW_HIDE);
+        if (!native_logon_attached()) ShowWindow(GetDlgItem(hwnd, ID_NATIVE), SW_SHOWNA);
+    }
+    InvalidateRect(hwnd, NULL, FALSE); UpdateWindow(hwnd);
+}
+
 static void paint_welcome(HWND hwnd)
 {
     PAINTSTRUCT paint;
@@ -236,7 +302,31 @@ static void paint_welcome(HWND hwnd)
         fill(dc, rectangle, RGB(57-band*57/127,52-band*4/127,173-band*17/127));
     }
     bitmap(dc, 125, 0, sy(78), area.right, sy(2));
-    bitmap(dc, 126, 0, sy(504), area.right, sy(3));
+    if (status_view != VIEW_WELCOME_SINGLE) bitmap(dc, 126, 0, sy(504), area.right, sy(3));
+    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255,255,255));
+    if (status_view == VIEW_WELCOME_SINGLE) {
+        paint_greeting(dc, 100, 800); EndPaint(hwnd, &paint); return;
+    }
+    if (status_view == VIEW_WELCOME_MULTI) {
+        bitmap(dc, 124, sx(398), sy(121), sx(1)>0 ? sx(1) : 1, sy(340));
+        paint_greeting(dc, 40, 370);
+        SetRect(&rectangle, sx(434), sy(262), sx(488), sy(316));
+        rounded(dc, rectangle, RGB(239,247,255), RGB(239,247,255));
+        bitmap(dc, 114, sx(437), sy(265), sx(48), sy(48));
+        SetRect(&rectangle, sx(499), sy(262), sx(775), sy(285));
+        SetTextColor(dc, RGB(255,255,255));
+        label(dc, title_font, profiles_name(selected_profile), rectangle, DT_LEFT | DT_SINGLELINE);
+        SetRect(&rectangle, sx(499), sy(285), sx(775), sy(320));
+        SetTextColor(dc, RGB(0,48,156));
+        label(dc, status_font, russian_ui() ? "\307\340\343\360\363\347\352\340\040\353\350\367\355\373\365\040\357\340\360\340\354\345\362\360\356\342\056\056\056" : "Loading your personal settings...", rectangle, DT_LEFT | DT_WORDBREAK);
+        EndPaint(hwnd, &paint); return;
+    }
+    if (status_view == VIEW_SHUTDOWN) {
+        paint_logo(dc, 332, 232);
+        SetRect(&rectangle, sx(80), sy(338), sx(720), sy(389));
+        label(dc, body_font, russian_ui() ? "\307\340\342\345\360\370\345\355\350\345\040\360\340\341\356\362\373\040\127\151\156\144\157\167\163\056\056\056" : "Windows is shutting down...", rectangle, DT_CENTER | DT_SINGLELINE);
+        EndPaint(hwnd, &paint); return;
+    }
     bitmap(dc, 124, sx(398), sy(121), sx(1) > 0 ? sx(1) : 1, sy(340));
     bitmap(dc, 123, sx(243), sy(232), sx(137), sy(86));
     /* Retain the supplied artwork, replacing only the XP suffix with 95. */
@@ -330,7 +420,7 @@ static void allow_logon(void)
     HWND found = NULL;
     RECT area;
     int x, y, width;
-    if (preview || finishing) return;
+    if (preview || finishing || status_view != VIEW_LOGIN) return;
     if (login_window && IsWindow(login_window) && IsWindowVisible(login_window)) {
         if (native_logon_attached()) {
             login_geometry(&x, &y, &width);
@@ -390,7 +480,7 @@ static void maintain_topmost(HWND hwnd)
     HWND popup;
     UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
-    if (!login_window || !IsWindow(login_window) || !IsWindowVisible(login_window) ||
+    if (status_view != VIEW_LOGIN || !login_window || !IsWindow(login_window) || !IsWindowVisible(login_window) ||
         (!native_logon_attached() && !prefer_native)) return;
     /* Keep the actual password controls above our own canvas. Owned error
        messages are the sole intentional exception to the welcome's priority. */
@@ -406,6 +496,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     char requested_name[128];
     switch (message) {
     case WM_CREATE:
+        if (preview_status) preview_started = GetTickCount();
         SetTimer(hwnd, TICK, 100, NULL);
         escape_hotkey = RegisterHotKey(hwnd, 1, 0, VK_ESCAPE);
         close_hotkey = RegisterHotKey(hwnd, 2, MOD_ALT, VK_F4);
@@ -431,21 +522,33 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             SendMessageA(button, WM_SETFONT, (WPARAM)small_font, TRUE);
             }
         }
+        if (status_view != VIEW_LOGIN) set_status_view(hwnd, status_view);
         return 0;
     case WM_PAINT: paint_welcome(hwnd); return 0;
     case WM_DRAWITEM: draw_button((DRAWITEMSTRUCT *)lp); return TRUE;
     case WM_ERASEBKGND: return 1;
     case WM_CLOSE: return 0;
     case WM_HOTKEY: return 0;
+    case WM_QUERYENDSESSION:
+        if (!((DWORD)lp & 0x80000000UL)) set_status_view(hwnd, VIEW_SHUTDOWN);
+        return TRUE;
+    case WM_ENDSESSION:
+        if (wp) { DestroyWindow(hwnd); return 0; }
+        if (!wp && status_view == VIEW_SHUTDOWN) {
+            if (monitor_active) DestroyWindow(hwnd);
+            else set_status_view(hwnd, VIEW_LOGIN);
+        }
+        return 0;
     case WM_SYSCOMMAND:
         if ((wp & 0xfff0) == SC_CLOSE || (wp & 0xfff0) == SC_MINIMIZE) return 0;
         break;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
         if (wp == VK_ESCAPE || wp == VK_F4) return 0;
-        if (wp == VK_RETURN) { if (!pending_profile) native_logon_submit(); return 0; }
+        if (wp == VK_RETURN) { if (status_view == VIEW_LOGIN && !pending_profile) native_logon_submit(); return 0; }
         break;
     case WM_LBUTTONDOWN:
+        if (status_view != VIEW_LOGIN) return 0;
         x = LOWORD(lp); y = HIWORD(lp);
         for (index = profile_page*4; index < profile_page*4 + visible_profiles(); ++index) {
             if (x >= sx(425) && x < sx(775) && y >= sy(profile_top(index)) && y < sy(profile_top(index)+64) &&
@@ -457,6 +560,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         }
         return 0;
     case WM_COMMAND:
+        if (status_view != VIEW_LOGIN) return 0;
         if (LOWORD(wp) == ID_PREV || LOWORD(wp) == ID_NEXT) {
             index = profile_page + (LOWORD(wp) == ID_NEXT ? 1 : -1);
             if (index >= 0 && index*4 < profiles_count()) {
@@ -466,13 +570,15 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             }
         }
         if (LOWORD(wp) == ID_SUBMIT) {
-            if (preview) { finishing = TRUE; finish_time = GetTickCount(); }
+            if (preview) { finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd, profiles_count()>1 ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE); }
             else if (!pending_profile) native_logon_submit();
         }
-        if (LOWORD(wp) == ID_POWER && !preview && MessageBoxA(hwnd, "Turn off this computer?", APP, MB_YESNO | MB_ICONQUESTION) == IDYES)
-            ExitWindowsEx(EWX_SHUTDOWN, 0);
+        if (LOWORD(wp) == ID_POWER && !preview && MessageBoxA(hwnd, "Turn off this computer?", APP, MB_YESNO | MB_ICONQUESTION) == IDYES) {
+            set_status_view(hwnd, VIEW_SHUTDOWN);
+            if (!ExitWindowsEx(EWX_SHUTDOWN, 0)) set_status_view(hwnd, VIEW_LOGIN);
+        }
         if (preview && LOWORD(wp) == ID_DONE && !finishing) {
-            finishing = TRUE; finish_time = GetTickCount(); InvalidateRect(hwnd, NULL, FALSE);
+            finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd, profiles_count()>1 ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE);
         }
         if (LOWORD(wp) == ID_NATIVE && login_window) {
             prefer_native = TRUE;
@@ -486,12 +592,14 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if (stop_event && WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
             DestroyWindow(hwnd); return 0;
         }
-        if (!finishing && ready_event && WaitForSingleObject(ready_event, 0) == WAIT_OBJECT_0) {
-            finishing = TRUE; finish_time = GetTickCount(); InvalidateRect(hwnd, NULL, FALSE);
+        if (status_view == VIEW_LOGIN && !finishing && ready_event && WaitForSingleObject(ready_event, 0) == WAIT_OBJECT_0) {
+            finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd, profiles_count()>1 ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE);
         }
         if (finishing && (DWORD)(GetTickCount() - finish_time) >= 1000) {
             DestroyWindow(hwnd); return 0;
         }
+        if (preview_status && (DWORD)(GetTickCount()-preview_started) >= 5000) { DestroyWindow(hwnd); return 0; }
+        if (status_view != VIEW_LOGIN) { maintain_topmost(hwnd); return 0; }
         if (servicing_logon) return 0;
         servicing_logon = TRUE;
         allow_logon();
@@ -513,7 +621,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     case WM_DISPLAYCHANGE:
         SetWindowPos(hwnd, NULL, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), SWP_NOZORDER | SWP_NOACTIVATE);
         login_geometry(&x, &y, &width);
-        if (native_logon_attached() && !native_logon_layout(x, y, width)) {
+        if (status_view == VIEW_LOGIN && native_logon_attached() && !native_logon_layout(x, y, width)) {
             prefer_native = TRUE;
             native_logon_restore(TRUE);
             ShowWindow(GetDlgItem(hwnd, ID_NATIVE), SW_HIDE);
@@ -530,7 +638,40 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     case WM_DESTROY:
         if (escape_hotkey) UnregisterHotKey(hwnd, 1);
         if (close_hotkey) UnregisterHotKey(hwnd, 2);
-        KillTimer(hwnd, TICK); release_logon(); PostQuitMessage(0); return 0;
+        KillTimer(hwnd, TICK); release_logon(); screen = NULL;
+        if (!monitor_active) PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcA(hwnd, message, wp, lp);
+}
+
+static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp)
+{
+    switch (message) {
+    case WM_CREATE: SetTimer(hwnd, TICK, 250, NULL); return 0;
+    case WM_QUERYENDSESSION:
+        if (!((DWORD)lp & 0x80000000UL) && enabled() && !FindWindowA("Welcome95.Screen", NULL)) {
+            status_view = VIEW_SHUTDOWN;
+            screen = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "Welcome95.Screen", APP,
+                WS_POPUP | WS_VISIBLE, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
+                NULL, NULL, instance, NULL);
+            if (screen) UpdateWindow(screen);
+        }
+        return TRUE;
+    case WM_ENDSESSION:
+        if (screen && IsWindow(screen)) DestroyWindow(screen);
+        if (wp) DestroyWindow(hwnd);
+        return 0;
+    case WM_TIMER:
+        if (ready_event && (DWORD)(GetTickCount()-monitor_started) >= 15000) {
+            CloseHandle(ready_event); ready_event = NULL;
+        }
+        if (stop_event && WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
+            if (screen && IsWindow(screen)) DestroyWindow(screen);
+            DestroyWindow(hwnd);
+        }
+        return 0;
+    case WM_DESTROY: KillTimer(hwnd, TICK); PostQuitMessage(0); return 0;
     }
     return DefWindowProcA(hwnd, message, wp, lp);
 }
@@ -565,6 +706,9 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
         button(hwnd, "Disable", ID_DISABLE, 130, 185, 100);
         button(hwnd, "Preview", ID_PREVIEW, 240, 185, 100);
         button(hwnd, "Close", ID_EXIT, 350, 185, 100);
+        button(hwnd, "Welcome (one)", ID_PREVIEW_SINGLE, 20, 225, 140);
+        button(hwnd, "Welcome (many)", ID_PREVIEW_MULTI, 170, 225, 140);
+        button(hwnd, "Shutdown preview", ID_PREVIEW_SHUTDOWN, 320, 225, 140);
         update_settings(hwnd); return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) {
@@ -572,10 +716,15 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
             if (configure(hwnd, TRUE)) MessageBoxA(hwnd, "Enabled. Restart Windows to test startup.\r\nKeep this executable at its current path.", APP, MB_OK | MB_ICONINFORMATION);
             update_settings(hwnd); break;
         case ID_DISABLE: configure(hwnd, FALSE); update_settings(hwnd); break;
+        case ID_PREVIEW_SINGLE:
+        case ID_PREVIEW_MULTI:
+        case ID_PREVIEW_SHUTDOWN:
         case ID_PREVIEW:
             zero_memory(&startup, sizeof(startup)); startup.cb = sizeof(startup);
             zero_memory(&process, sizeof(process));
-            command_line(command, "/preview");
+            command_line(command, LOWORD(wp) == ID_PREVIEW_SINGLE ? "/preview-single" :
+                LOWORD(wp) == ID_PREVIEW_MULTI ? "/preview-multi" :
+                LOWORD(wp) == ID_PREVIEW_SHUTDOWN ? "/preview-shutdown" : "/preview");
             if (!CreateProcessA(exe_path, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process))
                 error_box(hwnd, "Cannot start preview.");
             else { CloseHandle(process.hThread); CloseHandle(process.hProcess); }
@@ -583,9 +732,17 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
         case ID_EXIT: DestroyWindow(hwnd); break;
         }
         return 0;
+    case WM_ENDSESSION: if (wp) DestroyWindow(hwnd); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     }
     return DefWindowProcA(hwnd, message, wp, lp);
+}
+
+static void release_ui_fonts(void)
+{
+    DeleteObject(status_font); DeleteObject(welcome_font); DeleteObject(title_font);
+    DeleteObject(body_font); DeleteObject(small_font);
+    bundled_fonts_release();
 }
 
 int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int show)
@@ -595,20 +752,32 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
     HWND window;
     DWORD length, version;
     BOOL welcome;
+    BOOL session_monitor;
     (void)previous; (void)show;
     instance = current;
     length = GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
     if (!length || length >= sizeof(exe_path) - 1) return 1;
-    if (!lstrcmpiA(arguments, "/session-ready")) {
+    session_monitor = !lstrcmpiA(arguments, "/session-ready");
+    if (session_monitor) {
         ready_event = CreateEventA(NULL, TRUE, FALSE, READY_EVENT);
         if (!ready_event) return 1;
         SetEvent(ready_event);
-        /* Preserve the signal if Run races the RunServices process. */
-        Sleep(15000); CloseHandle(ready_event); return 0;
+        monitor_instance = CreateEventA(NULL, TRUE, FALSE, "Welcome95.SessionMonitor");
+        if (!monitor_instance) { CloseHandle(ready_event); return 1; }
+        if (GetLastError() == ERROR_ALREADY_EXISTS) { CloseHandle(monitor_instance); CloseHandle(ready_event); return 0; }
+        monitor_active = TRUE; monitor_started = GetTickCount();
+        stop_event = CreateEventA(NULL, TRUE, FALSE, STOP_EVENT);
+        if (!stop_event) { CloseHandle(monitor_instance); CloseHandle(ready_event); return 1; }
     }
-    preview = !lstrcmpiA(arguments, "/preview");
+    preview_status = !lstrcmpiA(arguments, "/preview-single") || !lstrcmpiA(arguments, "/preview-multi") ||
+        !lstrcmpiA(arguments, "/preview-shutdown");
+    preview = !lstrcmpiA(arguments, "/preview") || preview_status;
+    if (!lstrcmpiA(arguments, "/preview-single")) status_view = VIEW_WELCOME_SINGLE;
+    if (!lstrcmpiA(arguments, "/preview-multi")) status_view = VIEW_WELCOME_MULTI;
+    if (!lstrcmpiA(arguments, "/preview-shutdown")) status_view = VIEW_SHUTDOWN;
+    preview_started = GetTickCount();
     welcome = !lstrcmpiA(arguments, "/welcome");
-    if (*arguments && !preview && !welcome) {
+    if (*arguments && !preview && !welcome && !session_monitor) {
         error_box(NULL, "Unknown option. Run without arguments for settings."); return 1;
     }
     version = GetVersion();
@@ -630,29 +799,38 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
         }
     }
     profiles_load();
-    title_font = CreateFontA(-sy(20), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET,
+    bundled_fonts_load(instance);
+    welcome_font = CreateFontA(-font_pixels(36), 0, 0, 0, FW_BOLD, TRUE, FALSE, FALSE, ANSI_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
+    title_font = CreateFontA(-font_pixels(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
     body_font = CreateFontA(-sy(20), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
-    small_font = CreateFontA(-sy(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
+    small_font = CreateFontA(-font_pixels(9), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
+    status_font = CreateFontA(-font_pixels(8), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
     zero_memory(&cls, sizeof(cls));
     cls.hInstance = instance; cls.hCursor = LoadCursor(NULL, IDC_ARROW);
     cls.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-    cls.lpfnWndProc = welcome || preview ? welcome_proc : settings_proc;
-    cls.lpszClassName = welcome || preview ? "Welcome95.Screen" : "Welcome95.Settings";
-    if (!RegisterClassA(&cls)) return 1;
-    if (welcome || preview) {
+    cls.lpfnWndProc = welcome || preview || session_monitor ? welcome_proc : settings_proc;
+    cls.lpszClassName = welcome || preview || session_monitor ? "Welcome95.Screen" : "Welcome95.Settings";
+    if (!RegisterClassA(&cls)) { release_ui_fonts(); return 1; }
+    if (session_monitor) {
+        cls.lpfnWndProc = monitor_proc; cls.lpszClassName = "Welcome95.Monitor";
+        if (!RegisterClassA(&cls)) { release_ui_fonts(); return 1; }
+        window = CreateWindowA(cls.lpszClassName, APP, WS_OVERLAPPED, 0, 0, 0, 0, NULL, NULL, instance, NULL);
+    } else if (welcome || preview) {
         window = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, cls.lpszClassName, APP,
             WS_POPUP | WS_VISIBLE, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
             NULL, NULL, instance, NULL);
         screen = window;
     } else {
         window = CreateWindowA(cls.lpszClassName, "Welcome95 settings", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-            CW_USEDEFAULT, CW_USEDEFAULT, 500, 270, NULL, NULL, instance, NULL);
+            CW_USEDEFAULT, CW_USEDEFAULT, 500, 315, NULL, NULL, instance, NULL);
         ShowWindow(window, SW_SHOW);
     }
-    if (!window) return 1;
+    if (!window) { release_ui_fonts(); return 1; }
     UpdateWindow(window);
     while (GetMessageA(&message, NULL, 0, 0) > 0) {
         if ((welcome || preview) || !IsDialogMessageA(window, &message)) {
@@ -662,7 +840,8 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
     if (ready_event) CloseHandle(ready_event);
     if (stop_event) CloseHandle(stop_event);
     if (running_event) CloseHandle(running_event);
-    DeleteObject(title_font); DeleteObject(body_font); DeleteObject(small_font);
+    if (monitor_instance) CloseHandle(monitor_instance);
+    release_ui_fonts();
     return 0;
 }
 

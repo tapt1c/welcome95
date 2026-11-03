@@ -28,7 +28,9 @@ static BOOL above(HWND first, HWND second)
 
 void topmost_test_entry(void)
 {
-    HWND canvas, competitor, popup, foreground;
+    HWND canvas, competitor, popup, foreground, state_window, observer;
+    WNDCLASSA state_class;
+    MSG queued;
     HINSTANCE current = GetModuleHandleA(NULL);
     test_output = CreateFileA("topmost-test.log", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
                              FILE_ATTRIBUTE_NORMAL, NULL);
@@ -69,6 +71,52 @@ void topmost_test_entry(void)
     DestroyWindow(login_window); login_window = NULL;
     DestroyWindow(competitor);
     DestroyWindow(canvas);
+    instance = current; monitor_active = TRUE; preview = FALSE; preview_status = FALSE;
+    zero_memory(&state_class, sizeof(state_class));
+    state_class.hInstance = current; state_class.lpfnWndProc = welcome_proc;
+    state_class.lpszClassName = "Welcome95.Screen";
+    state_class.hCursor = LoadCursor(NULL, IDC_ARROW);
+    RegisterClassA(&state_class);
+    status_view = VIEW_LOGIN;
+    screen = CreateWindowExA(WS_EX_TOPMOST, state_class.lpszClassName, "State fixture", WS_POPUP | WS_VISIBLE,
+        0, 0, 800, 600, NULL, NULL, current, NULL);
+    state_window = screen;
+    test_check(state_window != NULL && IsWindowVisible(GetDlgItem(state_window, ID_SUBMIT)), "create real login-state controls");
+    ready_event = CreateEventA(NULL, TRUE, TRUE, NULL);
+    finishing = FALSE;
+    SendMessageA(state_window, WM_TIMER, TICK, 0);
+    test_check(status_view == VIEW_WELCOME_MULTI && finishing, "session-ready signal selects the multiple-user loading state");
+    test_check(!IsWindowVisible(GetDlgItem(state_window, ID_SUBMIT)) && !IsWindowVisible(GetDlgItem(state_window, ID_POWER)),
+        "loading state hides login and power controls");
+    CloseHandle(ready_event); ready_event = NULL; finishing = FALSE;
+    set_status_view(state_window, VIEW_WELCOME_SINGLE);
+    test_check(status_view == VIEW_WELCOME_SINGLE && !IsWindowVisible(GetDlgItem(state_window, ID_PREV)),
+        "single-user welcome state has no account navigation");
+    set_status_view(state_window, VIEW_LOGIN);
+    test_check(IsWindowVisible(GetDlgItem(state_window, ID_SUBMIT)), "returning to login restores interactive controls");
+    test_check(SendMessageA(state_window, WM_QUERYENDSESSION, 0, 0) == TRUE && status_view == VIEW_SHUTDOWN,
+        "shutdown query shows status without vetoing shutdown");
+    test_check(!IsWindowVisible(GetDlgItem(state_window, ID_SUBMIT)), "shutdown status has no credential controls");
+    monitor_proc(state_window, WM_ENDSESSION, FALSE, 0);
+    test_check(!IsWindow(state_window) && screen == NULL, "cancelled shutdown destroys the monitor's status canvas");
+    test_check(!PeekMessageA(&queued, NULL, WM_QUIT, WM_QUIT, PM_REMOVE), "closing a monitor canvas does not quit the session observer");
+    status_view = VIEW_LOGIN;
+    screen = CreateWindowExA(WS_EX_TOPMOST, state_class.lpszClassName, "State fixture", WS_POPUP | WS_VISIBLE,
+        0, 0, 800, 600, NULL, NULL, current, NULL);
+    state_window = screen;
+    SendMessageA(state_window, WM_QUERYENDSESSION, 0, (LPARAM)0x80000000UL);
+    test_check(status_view == VIEW_LOGIN, "an explicit logoff notification is not labelled as shutdown");
+    preview_status = TRUE; preview_started = GetTickCount()-5001;
+    set_status_view(state_window, VIEW_SHUTDOWN);
+    SendMessageA(state_window, WM_TIMER, TICK, 0);
+    test_check(!IsWindow(state_window), "shutdown preview closes automatically without shutting down the OS");
+    state_class.lpfnWndProc = monitor_proc; state_class.lpszClassName = "Welcome95.TestMonitor";
+    RegisterClassA(&state_class);
+    observer = CreateWindowA(state_class.lpszClassName, "Observer fixture", WS_OVERLAPPED, 0, 0, 0, 0, NULL, NULL, current, NULL);
+    SendMessageA(observer, WM_ENDSESSION, TRUE, 0);
+    test_check(!IsWindow(observer), "committed shutdown closes the session observer normally");
+    test_check(PeekMessageA(&queued, NULL, WM_QUIT, WM_QUIT, PM_REMOVE), "observer exits through its message loop for font cleanup");
+    monitor_active = FALSE;
     CloseHandle(test_output);
     ExitProcess(test_failures ? 1 : 0);
 }

@@ -7,3 +7,7 @@
 124 BITMAP "divider.bmp"
 125 BITMAP "top-edge.bmp"
 126 BITMAP "bottom-edge.bmp"
+1001 RCDATA "fonts/TAHOMA.TTF"
+1002 RCDATA "fonts/TAHOMABD.TTF"
+1003 RCDATA "fonts/ARIAL.TTF"
+1004 RCDATA "fonts/ARIALBI.TTF"

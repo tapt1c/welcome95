@@ -68,3 +68,26 @@ remains pending; later provider-specific failures are still possible.
 - Validate PWL mapping truncation/encoding and account enumeration errors.
 - Add keyboard navigation and better visible feedback for failed profile changes.
 - Confirm native restoration after resolution changes and provider-driven resizing.
+
+## Welcome/shutdown state reconstruction and supplied fonts
+
+Implemented loading states: one account has a lone greeting; multiple accounts
+show only the selected account with loading text. The login/password phase remains
+separate. Run's /session-ready now keeps a hidden session observer for ordinary
+Windows shutdown notifications. Cancel restores the desktop; successful shutdown
+exits through the message loop for font cleanup. Preview-only modes expire in 5 s.
+
+Supplied Arial/Tahoma TTFs are embedded and temporarily registered via Win95 GDI.
+XP resources identify Arial Bold Italic 36 pt with 2×3 shadow for welcome. Supplied
+files are versions 7.x, so identical historical XP rasterization is not claimed.
+
+Latest validation: 65 checks under Wine64: 36 native, 22 priority/state/observer,
+7 font extraction/selection/cleanup checks. Three actual preview screenshots
+were inspected. No real OS shutdown was triggered by tests.
+
+- [ ] Validate one/many count and selected identity at real session-ready startup.
+- [ ] Verify Russian CP1251 welcome/status rendering and Tahoma/Arial on Windows 95.
+- [ ] Verify shutdown from Start menu, cancellation, Disable and helper exit on 95.
+- [ ] Confirm temporary font cleanup on normal exits and observe forced-exit leftovers.
+- [ ] Confirm final OS-owned shutdown screen handoff; ordinary EXE coverage ends
+      when Windows closes the observer. No VxD or provider replacement is included.
