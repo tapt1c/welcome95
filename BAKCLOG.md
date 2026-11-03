@@ -284,3 +284,22 @@ Input in tests is synthetic; OS authentication, logoff and power remain inert.
 - [ ] Repeat the native wrong-password prompt and ensure existing input survives.
 - [ ] Recheck the power button after uncovering, focus changes and repeated Cancel
       on the user's actual Win95 GDI/display driver.
+
+
+## Confirmed Win95 loader failure: GetWindowRgnBox (current)
+
+The user's loader screenshot explicitly reports the missing export
+USER32.DLL:GetWindowRgnBox. c77ab64 incorrectly added that static dependency;
+Wine supplied it and the prior whitelist mistakenly accepted it.
+
+Replaced both diagnostic and layout calls with GetWindowRgn + GDI32.GetRgnBox.
+A separate reusable probe is allocated per attachment and released on restore;
+it never overwrites the original provider-region snapshot. Added a nonrectangular
+original-region restoration regression and a hard rejection of GetWindowRgnBox
+in the PE checker. The checker now rejects the exact previous tracked binary.
+
+Validation: rebuilt CRT-free i386 frontend and audited both production PEs;
+365 Wine checks per resolution in the three standard screen modes, including
+45 native-control cases. Actual Windows 95 launch/login still needs repetition;
+the screenshot establishes this missing export precisely, unlike earlier UI
+recordings. Password visibility, GDI repaint and boot fixes remain in place.

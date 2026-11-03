@@ -288,3 +288,14 @@ cover/uncover the window and change resolution. Check the real power button icon
 and text, not only clickability. If rendering still differs, compare the geometry,
 clipping and hit-class metadata in welcome95-diagnostics.txt. Video/Wine do not
 establish the exact Win95 provider or display-driver message sequence.
+
+
+## Win95 missing-export regression
+
+Current suite: 365 checks per resolution, including 45 native-control checks.
+The region probe uses GetWindowRgn + GDI32.GetRgnBox and must preserve an original
+nonrectangular provider region after repeated idle checks and changed layout.
+The PE checker explicitly rejects GetWindowRgnBox; it was also run against the
+tracked c77ab64 EXE and rejected its exact USER32 import. Both rebuilt production
+images pass. Wine does not establish target export availability: repeat actual
+Win95 launch, native field typing and power repaint after updating the EXE.

@@ -179,3 +179,10 @@ send WM_PAINT to the provider. Idle layouts must stay mutation-free.
 After presenting a WS_CLIPCHILDREN parent buffer, explicitly repaint its custom
 buttons. Preserve the caller's GDI DC state and honor DRAWITEMSTRUCT's item origin.
 Check real pixels after shade cancellation and parent damage, not only commands.
+
+
+The user's Windows 95 USER32 does not export GetWindowRgnBox. Never statically
+import it or add it back to the PE whitelist. Use GetWindowRgn + GDI32.GetRgnBox,
+with a separate reusable probe region; preserve the original restoration region.
+MinGW headers/import libraries and a passing Wine run do not establish Win95 API
+availability. Check new imports against target evidence before allowing them.

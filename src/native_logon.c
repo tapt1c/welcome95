@@ -15,7 +15,7 @@ static struct {
     DWORD process;
     LONG style, exstyle;
     RECT rectangle;
-    HRGN region;
+    HRGN region, region_probe;
     BOOL had_region;
     BOOL visible;
     BOOL attached;
@@ -26,6 +26,14 @@ static struct {
     CONTROL_STATE children[MAX_CONTROLS];
     char name[128];
 } saved;
+
+/* GetWindowRgnBox is not exported by the target Win95 USER32. Keep a separate
+   reusable probe so reading the current region cannot overwrite its backup. */
+static int window_region_box(RECT *box)
+{
+    if (!saved.region_probe || GetWindowRgn(saved.dialog, saved.region_probe) == ERROR) return ERROR;
+    return GetRgnBox(saved.region_probe, box);
+}
 
 static void diagnose(const char *reason)
 {
@@ -70,7 +78,7 @@ static void diagnose(const char *reason)
                 field.left,field.top,field.right,field.bottom,IsWindowVisible(saved.password),
                 IsWindowEnabled(saved.password),class_name,hit ? GetWindowLongA(hit,GWL_ID) : 0);
             WriteFile(file,line,(DWORD)lstrlenA(line),&written,NULL);
-            index=GetWindowRgnBox(saved.dialog,&clip);
+            index=window_region_box(&clip);
             wsprintfA(line,"  clip-type=%d rectangle=%d,%d,%d,%d\r\n",index,
                 index!=ERROR ? clip.left : 0,index!=ERROR ? clip.top : 0,
                 index!=ERROR ? clip.right : 0,index!=ERROR ? clip.bottom : 0);
@@ -195,7 +203,9 @@ void native_logon_restore(BOOL reveal_original)
         ShowWindow(saved.dialog, visible ? SW_SHOWNA : SW_HIDE);
     }
     if (saved.region) DeleteObject(saved.region);
+    if (saved.region_probe) DeleteObject(saved.region_probe);
     saved.region = NULL;
+    saved.region_probe = NULL;
     saved.dialog = NULL;
     saved.attached = FALSE; saved.layout_valid = FALSE;
 }
@@ -220,7 +230,7 @@ static BOOL layout_matches(int x, int y, int width, int height)
     origin.x=0; origin.y=0;
     if (!ClientToScreen(saved.dialog, &origin)) return FALSE;
     OffsetRect(&expected, origin.x-rectangle.left, origin.y-rectangle.top);
-    if (GetWindowRgnBox(saved.dialog, &clipping) != SIMPLEREGION || !EqualRect(&clipping, &expected)) return FALSE;
+    if (window_region_box(&clipping) != SIMPLEREGION || !EqualRect(&clipping, &expected)) return FALSE;
     for (index=0; index<saved.count; ++index)
         if (saved.children[index].window != saved.password &&
             (GetWindowLongA(saved.children[index].window, GWL_STYLE) & WS_VISIBLE)) return FALSE;
@@ -357,6 +367,8 @@ BOOL native_logon_attach(HWND dialog, int x, int y, int width)
     saved.exstyle = GetWindowLongA(dialog, GWL_EXSTYLE);
     saved.region = CreateRectRgn(0, 0, 0, 0);
     if (!saved.region) return FALSE;
+    saved.region_probe = CreateRectRgn(0, 0, 0, 0);
+    if (!saved.region_probe) { native_logon_restore(FALSE); return FALSE; }
     saved.had_region = GetWindowRgn(dialog, saved.region) != ERROR;
     saved.attached = TRUE;
     ShowWindow(dialog, SW_HIDE);

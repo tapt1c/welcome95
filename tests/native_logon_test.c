@@ -35,7 +35,7 @@ void test_entry(void)
     DLGTEMPLATE *template;
     HWND dialog, password, username, submit, cancel, hidden, extra, dormant[9];
     RECT original, rectangle, password_rectangle, live_password_rectangle;
-    HRGN region;
+    HRGN region, shape, expected_shape;
     LONG style;
     int index;
     char text[64];
@@ -171,6 +171,16 @@ void test_entry(void)
     check(!native_logon_attach(dialog, 345, 250, 260) && IsWindowVisible(extra),
           "a provider's domain selector is never silently hidden");
     DestroyWindow(extra);
+    shape=CreateRectRgn(0,0,180,200); expected_shape=CreateRectRgn(180,0,360,80);
+    CombineRgn(expected_shape,shape,expected_shape,RGN_OR);
+    CombineRgn(shape,expected_shape,NULL,RGN_COPY);
+    SetWindowRgn(dialog,shape,TRUE); /* Windows owns shape now. */
+    check(native_logon_attach(dialog,345,250,260),"attach while preserving an existing nonrectangular provider region");
+    for(index=0;index<100;++index) native_logon_layout(345,250,260);
+    native_logon_layout(320,280,280); native_logon_restore(FALSE);
+    check(GetWindowRgn(dialog,region)==COMPLEXREGION && EqualRgn(region,expected_shape),
+          "reusable region probes never overwrite the original provider-region backup");
+    DeleteObject(expected_shape); SetWindowRgn(dialog,NULL,FALSE);
     check(native_logon_attach(dialog, 345, 250, 260), "reattach after fallback");
     ShowWindow(dialog, SW_HIDE);
     native_logon_restore(FALSE);
