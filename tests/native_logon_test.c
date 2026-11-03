@@ -85,7 +85,7 @@ void test_entry(void)
     check(!(GetWindowLongA(dialog, GWL_STYLE) & WS_CAPTION), "native title bar is removed");
     region = CreateRectRgn(0, 0, 0, 0);
     check(GetWindowRgn(dialog, region) != ERROR, "native dialog has an explicit clipping region");
-    check(PtInRegion(region, 10, 10) && !PtInRegion(region, 250, 10) && !PtInRegion(region, 260-MulDiv(60,GetSystemMetrics(SM_CXSCREEN),800)+2, 10),
+    check(PtInRegion(region, 10, 10) && !PtInRegion(region, 250, 10) && !PtInRegion(region, 260-60+2, 10),
           "only the actual password field is exposed; all native dialog chrome is clipped");
     check(native_logon_layout(320, 280, 280), "relayout after screen geometry changes");
     GetWindowRect(dialog, &rectangle);

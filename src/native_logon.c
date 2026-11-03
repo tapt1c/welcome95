@@ -187,8 +187,8 @@ BOOL native_logon_layout(int x, int y, int width)
     POINT origin;
     int dx, dy, index, gap, height;
     if (!native_logon_attached() || width < 160) return FALSE;
-    gap = MulDiv(60, GetSystemMetrics(SM_CXSCREEN), 800);
-    height = MulDiv(22, GetSystemMetrics(SM_CYSCREEN), 600);
+    gap = 60;
+    height = 22;
     if (saved.layout_valid && saved.layout_x == x && saved.layout_y == y && saved.layout_width == width &&
         GetWindowRect(saved.dialog, &rectangle) && rectangle.left == x && rectangle.top == y &&
         rectangle.right-rectangle.left == width &&
@@ -248,6 +248,24 @@ BOOL native_logon_set_user(const char *name)
     lstrcpynA(saved.name, name, sizeof(saved.name));
     native_logon_focus();
     return TRUE;
+}
+
+BOOL native_logon_ready(void)
+{
+    return native_logon_attached() && IsWindowEnabled(saved.dialog) && IsWindowEnabled(saved.submit);
+}
+
+BOOL native_logon_try_empty(const char *name)
+{
+    DWORD_PTR modified;
+    if (!native_logon_ready()) return FALSE;
+    /* Metadata only: preserve input typed before we attached to a slow provider. */
+    if (!SendMessageTimeoutA(saved.password, EM_GETMODIFY, 0, 0,
+        SMTO_ABORTIFHUNG, 200, &modified) || modified) return FALSE;
+    /* Clear rather than inspect input. Windows alone decides whether blank is valid. */
+    if (!native_logon_set_user(name)) return FALSE;
+    return PostMessageA(saved.dialog, WM_COMMAND,
+        MAKEWPARAM(GetWindowLongA(saved.submit, GWL_ID), BN_CLICKED), (LPARAM)saved.submit);
 }
 
 BOOL native_logon_attach(HWND dialog, int x, int y, int width)

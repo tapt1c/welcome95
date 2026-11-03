@@ -132,3 +132,49 @@ fixtures and never read real PWL data.
 - [ ] Verify the real user's Daniel spelling and unwanted-card removal after login.
 - [ ] Verify Cyrillic source names on real ACP1251 Win95; do not infer success from
       an English Wine locale. Diagnostics now include resolution, depth and ACP only.
+
+
+## Shutdown choice, fixed-pixel layout and one-account auto-login
+
+Implemented the Explorer95-derived 314x200 shutdown choice with gradual GDI
+snapshot dimming, cancellation/input restoration and optional Stand By/MS-DOS.
+Shade and choice are removed before non-forced native power operations; shutdown
+status no longer raises over other applications' save/cancel prompts. Preview
+never dispatches a power action. Source provenance: docs/POWER_SOURCE.md.
+
+Replaced resolution scaling with fixed artwork/control dimensions and shared
+center/right/bottom anchors. Header/footer stay 78/96 px; fonts follow system DPI,
+not screen size. Native and preview password fields both remain 167x22 px.
+One discovered account gets one blank-password native OK at initial provider readiness;
+multiple accounts and preview do not. Failed attempts leave manual input intact.
+No PWL contents, stored passwords or synthetic success signals are involved.
+
+Validation: 268 checks per resolution under Wine64/Xvfb at 640x480x16, 800x600x24
+and 1024x768x24. Power/PIF callbacks are inert. Source compiles with C89/pedantic
+warnings as errors; PE audit checks i386/Windows 4.0/no CRT and five baseline DLLs.
+New preview screenshots show fixed-size layout at 1024 and the dimmed power choice.
+These checks do not establish actual Windows 95 authentication or power behavior.
+
+- [ ] Validate real Win95 single-profile empty-password success and password-required
+      failure/manual recovery with each supported network provider.
+- [ ] Validate APM suspend/resume, native save/cancel prompts and real shutdown/reboot.
+- [ ] Validate the real-mode PIF path before logon and return from DOS on Win95.
+- [ ] Check Russian ACP1251 labels and resolution changes with the real native Edit.
+- [ ] Successful DOS dispatch retains its private PIF for asynchronous loading;
+      consider conservative cleanup after confirmed later boot without deleting
+      files that Windows may still need. Failures already clean their own files.
+
+
+The user's additional 640x480 reference now has its own stacked composition:
+logo/prompt above a two-row account viewport with a native vertical scrollbar.
+A compact multi-account list starts collapsed; clicking even the initially
+selected index opens its password card. Loading places the greeting above the
+selected identity. Navigation and display changes use the same card anchors;
+scroll selection queues provider work. Avatars use their native 48px bitmap
+inside a 52px frame. The scrollbar uses the installed Windows theme.
+
+Blank-login eligibility is consumed on the initial attached single-account
+provider even if native OK is disabled. It stays manual in that case; enabling
+OK after the user begins typing cannot trigger a delayed password-clearing attempt.
+An already modified native Edit also remains manual (EM_GETMODIFY metadata only).
+The current suite has 268 checks per resolution, including 37 layout/login checks.

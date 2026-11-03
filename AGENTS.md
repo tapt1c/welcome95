@@ -64,14 +64,17 @@ limitations and evidence. Preserve existing user changes.
 
 The XP resources in assets came from a user-supplied reference executable; their
 origin is documented in assets/README.md. Do not execute or redistribute the
-uploaded XP executable. Keep one shared, scaled layout for rendering and hit tests.
+uploaded XP executable. Keep one shared layout for rendering, controls and hit
+tests. Artwork/control dimensions stay in pixels; use center/right/bottom anchors when resolution changes.
 Prefer clear Russian user updates. Report what changed, what was tested, and any
 remaining target-system uncertainty. Publish only within user-authorized scope.
 
 ## Session status screens and fonts
 
-The lone/multiple-account welcome states follow session-ready; they never bypass
-password entry. /session-ready is a hidden observer after signalling the startup
+The lone/multiple-account welcome states follow session-ready; Windows must
+authenticate even the single-account blank-password attempt. Never bypass
+authentication or retry it automatically. /session-ready is a hidden observer
+after signalling the startup
 canvas. It must approve shutdown queries, handle cancellation, exit normally on
 committed end-session, and release its font resources. Do not claim unknown OS
 shutdown phases as observed events. Preview states must never call ExitWindowsEx.
@@ -86,9 +89,34 @@ and ownership notices intact. Use the user-supplied XP font versions documented 
 Windows usernames are case-insensitive; do not invent case-sensitive identities.
 The native Edit spelling outranks PWL casing for display. Known profile names
 outrank unrelated cache aliases. Never guess a universal OEM/ANSI conversion.
-Use DEFAULT_CHARSET and scale font heights with the same layout reference.
+Use DEFAULT_CHARSET. Keep font sizes independent of screen resolution; system
+DPI may still affect point-size fonts.
 Use the supported COLORONCOLOR mode for bitmap shrinking; check actual GDI pixels.
 Run VGA checks with WELCOME95_TEST_SCREEN=640x480x16 and the default 800x600x24.
 
 For manual updates, stop the old observer with Disable and close its settings
 before replacing the EXE; then Enable the new copy and restart Windows.
+
+
+## Power dialog and single-account login
+
+Close the shade and restore exactly the originally enabled input windows before
+calling the OS. Do not force-close applications or cover their save/cancel prompts.
+Preview and automated tests must never execute real power, suspend or DOS actions.
+Use the inert operation/PIF hosts in the regression tests. Keep dynamic optional
+power APIs and the Win95-only gate; SHELL32 ShellExecuteExA is a baseline dependency.
+Record Explorer95 source changes in docs/POWER_SOURCE.md.
+
+Single-account auto-login may submit only one empty-password attempt through the
+native provider, after account selection and native OK are ready. Windows owns
+authentication. Do not read input, cache credentials, cancel a rejected login or
+retry automatically; preserve manual input after failure.
+
+
+Below 800px width or 600px height use the stacked compact composition: fixed logo
+above two visible rows, vertical navigation and a greeting above the loading card.
+Use page_size/page_first, card_x and row_y consistently; changing resolution must
+preserve selection and keep the native field and arrow above the footer. In a
+compact multi-account list, attach native input only after a card is opened.
+If native OK is initially disabled, consume automatic-login eligibility without
+submitting; never wait until newly typed manual input enables it.

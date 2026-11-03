@@ -3,6 +3,8 @@
 #include "native_logon.h"
 #include "profiles.h"
 #include "fonts.h"
+#include "power_dialog.h"
+#include "power_actions.h"
 
 #define APP "Welcome95"
 #define REG_SERVICE "Software\\Microsoft\\Windows\\CurrentVersion\\RunServices"
@@ -23,6 +25,7 @@
 #define ID_PREVIEW_SINGLE 111
 #define ID_PREVIEW_MULTI 112
 #define ID_PREVIEW_SHUTDOWN 113
+#define ID_PROFILE_SCROLL 114
 #define VIEW_LOGIN 0
 #define VIEW_WELCOME_SINGLE 1
 #define VIEW_WELCOME_MULTI 2
@@ -36,6 +39,8 @@ static int status_view;
 static BOOL monitor_active, preview_status;
 static DWORD preview_started, monitor_started;
 static HANDLE monitor_instance;
+static const PowerOperations *menu_power;
+static BOOL preview_power;
 static HANDLE ready_event, stop_event, running_event;
 static BOOL preview, finishing;
 static DWORD finish_time;
@@ -43,34 +48,64 @@ static HWND login_window;
 static BOOL login_was_topmost;
 static BOOL prefer_native;
 static int selected_profile, profile_page;
-static BOOL pending_profile, servicing_logon;
+static BOOL pending_profile, servicing_logon, automatic_attempted, compact_selected;
 static DWORD next_logon_attempt, next_profile_attempt;
 static BOOL escape_hotkey, close_hotkey;
 static char exe_path[MAX_PATH];
 
-static int sx(int value) { return MulDiv(value, GetSystemMetrics(SM_CXSCREEN), 800); }
-static int sy(int value) { return MulDiv(value, GetSystemMetrics(SM_CYSCREEN), 600); }
+/* Artwork/control dimensions stay in pixels; only their anchors move. */
+static int cx(int value) { return value + (GetSystemMetrics(SM_CXSCREEN)-800)/2; }
+static int cy(int value) { return value + (GetSystemMetrics(SM_CYSCREEN)-600)/2; }
+static int rx(int value) { return value + GetSystemMetrics(SM_CXSCREEN)-800; }
+static int by(int value) { return value + GetSystemMetrics(SM_CYSCREEN)-600; }
 
+static BOOL compact_layout(void)
+{
+    return GetSystemMetrics(SM_CXSCREEN)<800 || GetSystemMetrics(SM_CYSCREEN)<600;
+}
+static int compact_x(int value) { return value+(GetSystemMetrics(SM_CXSCREEN)-640)/2; }
+static int compact_y(int value) { return value+(GetSystemMetrics(SM_CYSCREEN)-480)/2; }
+static int card_x(int value) { return compact_layout() ? compact_x(value-268) : cx(value); }
+static int row_y(int value) { return compact_layout() ? compact_y(value) : cy(value); }
+static int loading_y(int value) { return compact_layout() ? compact_y(value-15) : cy(value); }
+static BOOL account_open(void) { return !compact_layout() || profiles_count()<=1 || compact_selected; }
+static int page_size(void) { return compact_layout() ? 2 : 4; }
+static int page_first(void) { return profile_page*page_size(); }
 static int visible_profiles(void)
 {
-    int total = profiles_count() ? profiles_count() : 1;
-    int remaining = total - profile_page * 4;
-    return remaining < 4 ? remaining : 4;
+    int total=profiles_count() ? profiles_count() : 1;
+    int remaining=total-page_first();
+    return remaining<page_size() ? remaining : page_size();
 }
 static int profile_top(int index)
 {
-    int slot = index - profile_page * 4;
-    return 291 - (visible_profiles() * 72 + 8) / 2 + slot * 72 +
-        (index > selected_profile && selected_profile / 4 == profile_page ? 8 : 0);
+    int slot=index-page_first();
+    if(compact_layout()) return 233+slot*80-(selected_profile==page_first()+1 ? 6 : 0);
+    return 291-(visible_profiles()*72+8)/2+slot*72+
+        (index>selected_profile && selected_profile/page_size()==profile_page ? 8 : 0);
 }
-static void login_geometry(int *x, int *y, int *width)
+static void login_geometry(int *x,int *y,int *width)
 {
-    *x = sx(501); *y = sy(profile_top(selected_profile) + 52); *width = sx(227);
+    *x=card_x(501); *y=row_y(profile_top(selected_profile)+52); *width=227;
 }
 static void position_arrow(HWND hwnd)
 {
-    SetWindowPos(GetDlgItem(hwnd, ID_SUBMIT), NULL, sx(685), sy(profile_top(selected_profile) + 51),
-        sx(26), sy(26), SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(GetDlgItem(hwnd,ID_SUBMIT),NULL,card_x(685),row_y(profile_top(selected_profile)+51),
+        26,26,SWP_NOZORDER|SWP_NOACTIVATE);
+    ShowWindow(GetDlgItem(hwnd,ID_SUBMIT),status_view==VIEW_LOGIN && account_open() ? SW_SHOWNA : SW_HIDE);
+}
+static void position_profile_navigation(HWND hwnd)
+{
+    BOOL show=status_view==VIEW_LOGIN;
+    int count=profiles_count();
+    SCROLLINFO range={sizeof(SCROLLINFO),SIF_RANGE|SIF_PAGE|SIF_POS|SIF_DISABLENOSCROLL,0,0,1,0,0};
+    HWND scroll=GetDlgItem(hwnd,ID_PROFILE_SCROLL);
+    SetWindowPos(scroll,NULL,compact_x(495),compact_y(208),17,176,SWP_NOZORDER|SWP_NOACTIVATE);
+    range.nMax=count>0 ? (count-1)/page_size() : 0; range.nPos=profile_page;
+    SetScrollInfo(scroll,SB_CTL,&range,TRUE);
+    ShowWindow(scroll,show && compact_layout() && count>1 ? SW_SHOWNA : SW_HIDE);
+    ShowWindow(GetDlgItem(hwnd,ID_PREV),show && !compact_layout() && count>4 ? SW_SHOWNA : SW_HIDE);
+    ShowWindow(GetDlgItem(hwnd,ID_NEXT),show && !compact_layout() && count>4 ? SW_SHOWNA : SW_HIDE);
 }
 
 static void zero_memory(void *memory, unsigned int size)
@@ -240,7 +275,7 @@ static void rounded(HDC dc, RECT area, COLORREF color, COLORREF edge)
     HBRUSH brush = CreateSolidBrush(color);
     HPEN pen = CreatePen(PS_SOLID, 1, edge);
     HGDIOBJ old_brush = SelectObject(dc, brush), old_pen = SelectObject(dc, pen);
-    RoundRect(dc, area.left, area.top, area.right, area.bottom, sx(5), sy(5));
+    RoundRect(dc, area.left, area.top, area.right, area.bottom, 5, 5);
     SelectObject(dc, old_brush); SelectObject(dc, old_pen);
     DeleteObject(brush); DeleteObject(pen);
 }
@@ -252,9 +287,21 @@ static int font_pixels(int points)
     if (dc) ReleaseDC(NULL, dc);
     {
         int pixels=MulDiv(points, dpi>0 ? dpi : 96, 72);
-        int x=sx(pixels), y=sy(pixels);
-        return (x<y ? x : y)>0 ? (x<y ? x : y) : 1;
+        return pixels>0 ? pixels : 1;
     }
+}
+static void create_ui_fonts(void)
+{
+    welcome_font = CreateFontA(-font_pixels(36), 0, 0, 0, FW_BOLD, TRUE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
+    title_font = CreateFontA(-font_pixels(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
+    body_font = CreateFontA(-20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
+    small_font = CreateFontA(-font_pixels(9), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
+    status_font = CreateFontA(-font_pixels(8), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
 }
 static BOOL russian_ui(void)
 {
@@ -268,18 +315,20 @@ static void paint_greeting(HDC dc, int left, int right)
 {
     RECT text;
     UINT align = right == 370 ? DT_RIGHT : DT_CENTER;
-    SetRect(&text, sx(left+2), sy(267+3), sx(right+2), sy(330+3));
+    if(compact_layout() && status_view==VIEW_WELCOME_MULTI) {
+        SetRect(&text,compact_x(82),compact_y(93),compact_x(487),compact_y(158)); align=DT_RIGHT;
+    } else SetRect(&text, cx(left+2), cy(267+3), cx(right+2), cy(330+3));
     SetTextColor(dc, RGB(49,81,181));
     label(dc, welcome_font, welcome_text(), text, align | DT_VCENTER | DT_SINGLELINE);
-    OffsetRect(&text, -sx(2), -sy(3));
+    OffsetRect(&text, -2, -3);
     SetTextColor(dc, RGB(239,247,255));
     label(dc, welcome_font, welcome_text(), text, align | DT_VCENTER | DT_SINGLELINE);
 }
-static void paint_logo(HDC dc, int x, int y)
+static void paint_logo_at(HDC dc, int x, int y)
 {
     RECT suffix;
-    bitmap(dc, 123, sx(x), sy(y), sx(137), sy(86));
-    SetRect(&suffix, sx(x+115), sy(y+54), sx(x+141), sy(y+86));
+    bitmap(dc, 123, x, y, 137, 86);
+    SetRect(&suffix, x+115, y+54, x+141, y+86);
     fill(dc, suffix, RGB(90,126,220));
     SetTextColor(dc, RGB(255,156,33));
     label(dc, body_font, "95", suffix, DT_LEFT | DT_SINGLELINE);
@@ -287,20 +336,64 @@ static void paint_logo(HDC dc, int x, int y)
 }
 static void set_status_view(HWND hwnd, int view)
 {
-    static const int controls[] = { ID_NATIVE, ID_SUBMIT, ID_POWER, ID_PREV, ID_NEXT, ID_DONE, 201 };
+    static const int controls[] = { ID_NATIVE, ID_SUBMIT, ID_POWER, ID_PREV, ID_NEXT, ID_PROFILE_SCROLL, ID_DONE, 201 };
     unsigned int index;
     status_view = view;
+    /* Cover the native field during shutdown without changing its visibility. */
+    if(view==VIEW_SHUTDOWN && native_logon_attached())
+        SetWindowPos(login_window,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    SetWindowPos(hwnd,view==VIEW_SHUTDOWN ? HWND_NOTOPMOST : HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
     if (view != VIEW_LOGIN) {
         for (index = 0; index < sizeof(controls)/sizeof(controls[0]); ++index)
             ShowWindow(GetDlgItem(hwnd, controls[index]), SW_HIDE);
     } else {
-        ShowWindow(GetDlgItem(hwnd, ID_SUBMIT), SW_SHOWNA);
+        position_arrow(hwnd);
         ShowWindow(GetDlgItem(hwnd, ID_POWER), SW_SHOWNA);
-        ShowWindow(GetDlgItem(hwnd, ID_PREV), profiles_count()>4 ? SW_SHOWNA : SW_HIDE);
-        ShowWindow(GetDlgItem(hwnd, ID_NEXT), profiles_count()>4 ? SW_SHOWNA : SW_HIDE);
+        position_profile_navigation(hwnd);
         if (!native_logon_attached()) ShowWindow(GetDlgItem(hwnd, ID_NATIVE), SW_SHOWNA);
     }
     InvalidateRect(hwnd, NULL, FALSE); UpdateWindow(hwnd);
+}
+
+static void login_hotkeys(HWND hwnd,BOOL enable)
+{
+    if(!enable) {
+        if(escape_hotkey) UnregisterHotKey(hwnd,1);
+        if(close_hotkey) UnregisterHotKey(hwnd,2);
+        escape_hotkey=close_hotkey=FALSE;
+    } else {
+        if(!escape_hotkey) escape_hotkey=RegisterHotKey(hwnd,1,0,VK_ESCAPE);
+        if(!close_hotkey) close_hotkey=RegisterHotKey(hwnd,2,MOD_ALT,VK_F4);
+    }
+}
+static void perform_power(PowerAction action,BOOL dos)
+{
+    DWORD error;
+    char text[160];
+    HWND owner=screen;
+    login_hotkeys(owner,FALSE);
+    if(action!=POWER_STANDBY) set_status_view(owner,VIEW_SHUTDOWN);
+    error=power_request(action,dos,owner,menu_power);
+    if(error || action==POWER_STANDBY) {
+        if(IsWindow(owner)) { set_status_view(owner,VIEW_LOGIN); login_hotkeys(owner,TRUE); }
+        if(error && error!=ERROR_CANCELLED) {
+            wsprintfA(text,"Windows could not perform the selected power action.\r\nError: %lu",error);
+            error_box(owner,text);
+        }
+        if(native_logon_attached()) native_logon_focus();
+    }
+}
+static void show_power_dialog(HWND owner)
+{
+    PowerDialogHost host;
+    if(power_dialog_active()) { power_dialog_focus(); return; }
+    menu_power=power_operations();
+    host.instance=instance; host.owner=owner; host.native_input=login_window;
+    host.russian=russian_ui(); host.preview=preview;
+    host.standby_available=preview || menu_power->standby_available;
+    host.dos_available=preview || menu_power->dos_available;
+    host.perform=perform_power; host.restore_focus=native_logon_focus;
+    if(!power_dialog_show(&host)) error_box(owner,"Cannot open the shutdown dialog.");
 }
 
 static void paint_welcome(HWND hwnd)
@@ -318,66 +411,61 @@ static void paint_welcome(HWND hwnd)
     if(frame) { old=SelectObject(memory,frame); dc=memory; }
     else if(memory) DeleteDC(memory);
     fill(dc, area, RGB(90,126,220));
-    bitmap(dc, 100, 0, sy(78), sx(219), sy(207));
-    SetRect(&rectangle, 0, 0, area.right, sy(78));
+    if(!compact_layout()) bitmap(dc, 100, 0, 78, 219, 207);
+    SetRect(&rectangle, 0, 0, area.right, 78);
     fill(dc, rectangle, RGB(0,48,156));
     for (band = 0; band < 128; ++band) {
-        SetRect(&rectangle, area.right*band/128, sy(504), area.right*(band+1)/128, area.bottom);
+        SetRect(&rectangle, area.right*band/128, by(504), area.right*(band+1)/128, area.bottom);
         fill(dc, rectangle, RGB(57-band*57/127,52-band*4/127,173-band*17/127));
     }
-    bitmap(dc, 125, 0, sy(78), area.right, sy(2));
-    if (status_view != VIEW_WELCOME_SINGLE) bitmap(dc, 126, 0, sy(504), area.right, sy(3));
+    bitmap(dc, 125, 0, 78, area.right, 2);
+    if (status_view != VIEW_WELCOME_SINGLE && !compact_layout()) bitmap(dc, 126, 0, by(504), area.right, 3);
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255,255,255));
     if (status_view == VIEW_WELCOME_SINGLE) {
         paint_greeting(dc, 100, 800); finish_paint(hwnd,&paint,dc,frame,old); return;
     }
     if (status_view == VIEW_WELCOME_MULTI) {
-        bitmap(dc, 124, sx(398), sy(121), sx(1)>0 ? sx(1) : 1, sy(340));
+        bitmap(dc,124,compact_layout() ? compact_x(128) : cx(398),compact_layout() ? compact_y(208) : 96,1,compact_layout() ? 170 : by(486)-96);
         paint_greeting(dc, 40, 370);
-        SetRect(&rectangle, sx(434), sy(262), sx(488), sy(316));
+        SetRect(&rectangle, card_x(433), loading_y(262), card_x(485), loading_y(314));
         rounded(dc, rectangle, RGB(239,247,255), RGB(239,247,255));
-        bitmap(dc, 114, sx(437), sy(265), sx(48), sy(48));
-        SetRect(&rectangle, sx(499), sy(262), sx(775), sy(285));
+        bitmap(dc, 114, card_x(435), loading_y(264), 48, 48);
+        SetRect(&rectangle, card_x(499), loading_y(262), card_x(775), loading_y(285));
         SetTextColor(dc, RGB(255,255,255));
         label(dc, title_font, profiles_name(selected_profile), rectangle, DT_LEFT | DT_SINGLELINE);
-        SetRect(&rectangle, sx(499), sy(285), sx(775), sy(320));
+        SetRect(&rectangle, card_x(499), loading_y(285), card_x(775), loading_y(320));
         SetTextColor(dc, RGB(0,48,156));
         label(dc, status_font, russian_ui() ? "\307\340\343\360\363\347\352\340\040\353\350\367\355\373\365\040\357\340\360\340\354\345\362\360\356\342\056\056\056" : "Loading your personal settings...", rectangle, DT_LEFT | DT_WORDBREAK);
         finish_paint(hwnd,&paint,dc,frame,old); return;
     }
     if (status_view == VIEW_SHUTDOWN) {
-        paint_logo(dc, 332, 232);
-        SetRect(&rectangle, sx(80), sy(338), sx(720), sy(389));
+        paint_logo_at(dc,cx(332),cy(232));
+        SetRect(&rectangle, cx(80), cy(338), cx(720), cy(389));
         label(dc, body_font, russian_ui() ? "\307\340\342\345\360\370\345\355\350\345\040\360\340\341\356\362\373\040\127\151\156\144\157\167\163\056\056\056" : "Windows is shutting down...", rectangle, DT_CENTER | DT_SINGLELINE);
         finish_paint(hwnd,&paint,dc,frame,old); return;
     }
-    bitmap(dc, 124, sx(398), sy(121), sx(1) > 0 ? sx(1) : 1, sy(340));
-    bitmap(dc, 123, sx(243), sy(232), sx(137), sy(86));
-    /* Retain the supplied artwork, replacing only the XP suffix with 95. */
-    SetRect(&rectangle, sx(358), sy(286), sx(384), sy(318));
-    fill(dc, rectangle, RGB(90,126,220));
-    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255,156,33));
-    label(dc, body_font, "95", rectangle, DT_LEFT | DT_SINGLELINE);
-    SetTextColor(dc, RGB(255,255,255));
-    SetRect(&rectangle, sx(40), sy(338), sx(355), sy(389));
-    label(dc, body_font, finishing ? "Starting your session..." : "To begin, enter your password", rectangle, DT_RIGHT | DT_WORDBREAK);
-    for (index = profile_page * 4; index < profile_page * 4 + visible_profiles(); ++index) {
+    bitmap(dc,124,compact_layout() ? compact_x(128) : cx(398),compact_layout() ? compact_y(208) : 96,1,compact_layout() ? 170 : by(486)-96);
+    paint_logo_at(dc,compact_layout() ? compact_x(356) : cx(243),compact_layout() ? compact_y(84) : cy(232));
+    if(compact_layout()) SetRect(&rectangle,compact_x(150),compact_y(188),compact_x(467),compact_y(214));
+    else SetRect(&rectangle,cx(40),cy(338),cx(355),cy(389));
+    label(dc, body_font, finishing ? "Starting your session..." : (account_open() ? "To begin, enter your password" : "To begin, click your user name"), rectangle, DT_RIGHT | DT_WORDBREAK);
+    for (index = page_first(); index < page_first() + visible_profiles(); ++index) {
         top = profile_top(index);
-        if (index == selected_profile) bitmap(dc, 112, sx(425), sy(top), sx(350), sy(72));
-        SetRect(&rectangle, sx(433), sy(top+8), sx(488), sy(top+63));
-        rounded(dc, rectangle, index == selected_profile ? RGB(255,235,94) : RGB(239,247,255), RGB(239,247,255));
-        bitmap(dc, 114, sx(437), sy(top+12), sx(47), sy(47));
-        SetRect(&rectangle, sx(499), sy(top+9), sx(765), sy(top+36));
-        label(dc, index == selected_profile ? title_font : body_font,
+        if (index == selected_profile && account_open()) bitmap(dc, 112, card_x(425), row_y(top), 350, 72);
+        SetRect(&rectangle, card_x(433), row_y(top+12), card_x(485), row_y(top+64));
+        rounded(dc, rectangle, index == selected_profile && account_open() ? RGB(255,235,94) : RGB(239,247,255), RGB(239,247,255));
+        bitmap(dc, 114, card_x(435), row_y(top+14), 48, 48);
+        SetRect(&rectangle, card_x(499), row_y(top+9), card_x(765), row_y(top+36));
+        label(dc, index == selected_profile && account_open() ? title_font : body_font,
             profiles_name(index), rectangle, DT_LEFT | DT_SINGLELINE);
-        if (index == selected_profile) {
-            SetRect(&rectangle, sx(499), sy(top+35), sx(765), sy(top+50));
+        if (index == selected_profile && account_open()) {
+            SetRect(&rectangle, card_x(499), row_y(top+35), card_x(765), row_y(top+50));
             label(dc, small_font, preview ? "Preview" : (pending_profile ? "Switching user..." : (native_logon_attached() ? "Type your password." : "Preparing sign-in...")), rectangle, DT_LEFT | DT_SINGLELINE);
-            SetRect(&rectangle, sx(499), sy(top+50), sx(670), sy(top+76));
+            SetRect(&rectangle, card_x(499), row_y(top+50), card_x(670), row_y(top+76));
             rounded(dc, rectangle, RGB(255,255,255), RGB(49,81,181));
         }
     }
-    SetRect(&rectangle, sx(470), sy(527), sx(775), sy(570));
+    SetRect(&rectangle, rx(470), by(527), rx(775), by(570));
     label(dc, small_font, "After you log on, you can change your settings.\nOpen Welcome95 to customize this screen.", rectangle, DT_LEFT | DT_WORDBREAK);
     finish_paint(hwnd,&paint,dc,frame,old);
 }
@@ -392,12 +480,12 @@ static void draw_button(DRAWITEMSTRUCT *item)
         bitmap(dc, 103, 0, 0, rectangle.right, rectangle.bottom);
     } else if (item->CtlID == ID_POWER) {
         for (pixel = 0; pixel < rectangle.right; ++pixel) {
-            band = (sx(25) + pixel) * 128 / GetSystemMetrics(SM_CXSCREEN);
+            band = (25 + pixel) * 128 / GetSystemMetrics(SM_CXSCREEN);
             SetRect(&stripe, pixel, 0, pixel + 1, rectangle.bottom);
             fill(dc, stripe, RGB(57-band*57/127,52-band*4/127,173-band*17/127));
         }
-        bitmap(dc, 107, 0, 0, sx(26), sy(26));
-        rectangle.left = sx(34);
+        bitmap(dc, 107, 0, 0, 26, 26);
+        rectangle.left = 34;
         SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255,255,255));
         label(dc, body_font, "Turn off computer", rectangle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
@@ -439,12 +527,23 @@ static void release_logon(void)
     if (screen) { ShowWindow(GetDlgItem(screen, ID_NATIVE), SW_HIDE); EnableWindow(GetDlgItem(screen, ID_SUBMIT), preview); }
 }
 
+/* One blank-password attempt, authenticated by Windows, never a retry loop. */
+static void try_single_account_logon(void)
+{
+    if (automatic_attempted || preview || finishing || prefer_native || pending_profile ||
+        status_view != VIEW_LOGIN || profiles_count()!=1 || !native_logon_attached()) return;
+    automatic_attempted=TRUE;
+    /* A provider that requires input before enabling OK stays manual. Waiting
+       until it enables OK could erase a password the user has begun typing. */
+    if(native_logon_ready()) native_logon_try_empty(profiles_name(0));
+}
+
 static void allow_logon(void)
 {
     HWND found = NULL;
     RECT area;
     int x, y, width;
-    if (preview || finishing || status_view != VIEW_LOGIN) return;
+    if (preview || finishing || status_view != VIEW_LOGIN || !account_open()) return;
     if (login_window && IsWindow(login_window) && IsWindowVisible(login_window)) {
         if (native_logon_attached()) {
             login_geometry(&x, &y, &width);
@@ -463,6 +562,7 @@ static void allow_logon(void)
     login_was_topmost = (GetWindowLongA(found, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
     login_geometry(&x, &y, &width);
     if (!prefer_native && native_logon_attach(found, x, y, width)) {
+        compact_selected=TRUE;
         if (!native_logon_user_empty()) profiles_accept_native(native_logon_name());
         if (native_logon_user_empty() && !profiles_count()) {
             native_logon_restore(TRUE);
@@ -476,10 +576,9 @@ static void allow_logon(void)
                 selected_profile = profiles_accept_native(native_logon_name());
                 if (selected_profile < 0) selected_profile = 0;
             }
-            profile_page = selected_profile / 4;
+            profile_page = selected_profile / page_size();
         }
-        ShowWindow(GetDlgItem(screen, ID_PREV), profiles_count()>4 ? SW_SHOWNA : SW_HIDE);
-        ShowWindow(GetDlgItem(screen, ID_NEXT), profiles_count()>4 ? SW_SHOWNA : SW_HIDE);
+        position_profile_navigation(screen);
         login_geometry(&x, &y, &width); native_logon_layout(x, y, width);
         position_arrow(screen);
         EnableWindow(GetDlgItem(screen, ID_SUBMIT), !pending_profile);
@@ -504,6 +603,7 @@ static void maintain_topmost(HWND hwnd)
 {
     HWND popup;
     UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+    if(power_dialog_active() || status_view==VIEW_SHUTDOWN) return;
     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
     if (status_view != VIEW_LOGIN || !login_window || !IsWindow(login_window) || !IsWindowVisible(login_window) ||
         (!native_logon_attached() && !prefer_native)) return;
@@ -526,24 +626,27 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         escape_hotkey = RegisterHotKey(hwnd, 1, 0, VK_ESCAPE);
         close_hotkey = RegisterHotKey(hwnd, 2, MOD_ALT, VK_F4);
         CreateWindowA("BUTTON", "Trouble signing in?", WS_CHILD | BS_PUSHBUTTON,
-            sx(625), sy(572), sx(150), sy(23), hwnd, (HMENU)ID_NATIVE, instance, NULL);
+            rx(625), by(572), 150, 23, hwnd, (HMENU)ID_NATIVE, instance, NULL);
         SendDlgItemMessageA(hwnd, ID_NATIVE, WM_SETFONT, (WPARAM)small_font, TRUE);
         CreateWindowA("BUTTON", "Sign in", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            sx(685), sy(304), sx(26), sy(26), hwnd, (HMENU)ID_SUBMIT, instance, NULL);
+            card_x(685), row_y(profile_top(selected_profile)+51), 26, 26, hwnd, (HMENU)ID_SUBMIT, instance, NULL);
         EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), preview);
         CreateWindowA("BUTTON", "Turn off computer", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            sx(25), sy(526), sx(245), sy(29), hwnd, (HMENU)ID_POWER, instance, NULL);
-        CreateWindowA("BUTTON", "<", WS_CHILD | (profiles_count()>4 ? WS_VISIBLE : 0), sx(720), sy(455), sx(25), sy(24), hwnd, (HMENU)ID_PREV, instance, NULL);
-        CreateWindowA("BUTTON", ">", WS_CHILD | (profiles_count()>4 ? WS_VISIBLE : 0), sx(750), sy(455), sx(25), sy(24), hwnd, (HMENU)ID_NEXT, instance, NULL);
+            25, by(526), 245, 29, hwnd, (HMENU)ID_POWER, instance, NULL);
+        CreateWindowA("BUTTON", "<", WS_CHILD | (profiles_count()>4 ? WS_VISIBLE : 0), cx(720), cy(455), 25, 24, hwnd, (HMENU)ID_PREV, instance, NULL);
+        CreateWindowA("BUTTON", ">", WS_CHILD | (profiles_count()>4 ? WS_VISIBLE : 0), cx(750), cy(455), 25, 24, hwnd, (HMENU)ID_NEXT, instance, NULL);
+        CreateWindowA("SCROLLBAR","",WS_CHILD|SBS_VERT,compact_x(495),compact_y(208),17,176,
+            hwnd,(HMENU)ID_PROFILE_SCROLL,instance,NULL);
+        position_profile_navigation(hwnd);
         position_arrow(hwnd);
         if (preview) {
             login_geometry(&x, &y, &width);
             CreateWindowA("EDIT", "", WS_CHILD | WS_DISABLED | ES_PASSWORD,
-                x, y, width - sx(60), sy(22), hwnd, (HMENU)201, instance, NULL);
+                x, y, width - 60, 22, hwnd, (HMENU)201, instance, NULL);
             /* A disabled preview edit never accepts a real password. */
             {
             HWND button = CreateWindowA("BUTTON", "Finish preview", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                sx(625), sy(572), sx(150), sy(23), hwnd, (HMENU)ID_DONE, instance, NULL);
+                rx(625), by(572), 150, 23, hwnd, (HMENU)ID_DONE, instance, NULL);
             SendMessageA(button, WM_SETFONT, (WPARAM)small_font, TRUE);
             }
         }
@@ -553,15 +656,18 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     case WM_DRAWITEM: draw_button((DRAWITEMSTRUCT *)lp); return TRUE;
     case WM_ERASEBKGND: return 1;
     case WM_CLOSE: return 0;
-    case WM_HOTKEY: return 0;
+    case WM_HOTKEY:
+        if(power_dialog_active() && (wp==1 || wp==2)) power_dialog_close();
+        return 0;
     case WM_QUERYENDSESSION:
+        power_dialog_close();
         if (!((DWORD)lp & 0x80000000UL)) set_status_view(hwnd, VIEW_SHUTDOWN);
         return TRUE;
     case WM_ENDSESSION:
         if (wp) { DestroyWindow(hwnd); return 0; }
         if (!wp && status_view == VIEW_SHUTDOWN) {
             if (monitor_active) DestroyWindow(hwnd);
-            else set_status_view(hwnd, VIEW_LOGIN);
+            else { set_status_view(hwnd, VIEW_LOGIN); login_hotkeys(hwnd,TRUE); }
         }
         return 0;
     case WM_SYSCOMMAND:
@@ -570,27 +676,45 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
         if (wp == VK_ESCAPE || wp == VK_F4) return 0;
-        if (wp == VK_RETURN) { if (status_view == VIEW_LOGIN && !pending_profile) native_logon_submit(); return 0; }
+        if (wp == VK_RETURN) { if (status_view == VIEW_LOGIN && account_open() && !pending_profile) native_logon_submit(); return 0; }
         break;
     case WM_LBUTTONDOWN:
+        if(power_dialog_active()) return 0;
         if (status_view != VIEW_LOGIN) return 0;
         x = LOWORD(lp); y = HIWORD(lp);
-        for (index = profile_page*4; index < profile_page*4 + visible_profiles(); ++index) {
-            if (x >= sx(425) && x < sx(775) && y >= sy(profile_top(index)) && y < sy(profile_top(index)+64) &&
-                index != selected_profile) {
+        for (index = page_first(); index < page_first() + visible_profiles(); ++index) {
+            if (x >= card_x(425) && x < card_x(775) && y >= row_y(profile_top(index)) && y < row_y(profile_top(index)+64) &&
+                (index != selected_profile || !account_open())) {
+                compact_selected=TRUE;
                 selected_profile = index; pending_profile = !preview; next_profile_attempt = 0;
-                position_arrow(hwnd); EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), preview);
+                position_arrow(hwnd); position_profile_navigation(hwnd); EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), preview);
                 InvalidateRect(hwnd, NULL, FALSE); break;
             }
         }
         return 0;
+    case WM_VSCROLL:
+        if(status_view==VIEW_LOGIN && !power_dialog_active() && (HWND)lp==GetDlgItem(hwnd,ID_PROFILE_SCROLL)) {
+            index=profile_page;
+            if(LOWORD(wp)==SB_LINEUP || LOWORD(wp)==SB_PAGEUP) --index;
+            else if(LOWORD(wp)==SB_LINEDOWN || LOWORD(wp)==SB_PAGEDOWN) ++index;
+            else if(LOWORD(wp)==SB_THUMBPOSITION || LOWORD(wp)==SB_THUMBTRACK) index=HIWORD(wp);
+            else if(LOWORD(wp)==SB_TOP) index=0;
+            else if(LOWORD(wp)==SB_BOTTOM) index=(profiles_count()-1)/page_size();
+            if(index>=0 && index*page_size()<profiles_count() && index!=profile_page) {
+                profile_page=index; selected_profile=page_first(); compact_selected=TRUE; pending_profile=!preview; next_profile_attempt=0;
+                position_arrow(hwnd); position_profile_navigation(hwnd);
+                EnableWindow(GetDlgItem(hwnd,ID_SUBMIT),preview); InvalidateRect(hwnd,NULL,FALSE);
+            }
+        }
+        return 0;
     case WM_COMMAND:
+        if(power_dialog_active()) { power_dialog_focus(); return 0; }
         if (status_view != VIEW_LOGIN) return 0;
         if (LOWORD(wp) == ID_PREV || LOWORD(wp) == ID_NEXT) {
             index = profile_page + (LOWORD(wp) == ID_NEXT ? 1 : -1);
-            if (index >= 0 && index*4 < profiles_count()) {
-                profile_page = index; selected_profile = index*4; pending_profile = !preview; next_profile_attempt = 0;
-                position_arrow(hwnd); EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), preview);
+            if (index >= 0 && index*page_size() < profiles_count()) {
+                profile_page = index; selected_profile = index*page_size(); compact_selected=TRUE; pending_profile = !preview; next_profile_attempt = 0;
+                position_arrow(hwnd); position_profile_navigation(hwnd); EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), preview);
                 InvalidateRect(hwnd, NULL, FALSE);
             }
         }
@@ -598,10 +722,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             if (preview) { finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd, profiles_count()>1 ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE); }
             else if (!pending_profile) native_logon_submit();
         }
-        if (LOWORD(wp) == ID_POWER && !preview && MessageBoxA(hwnd, "Turn off this computer?", APP, MB_YESNO | MB_ICONQUESTION) == IDYES) {
-            set_status_view(hwnd, VIEW_SHUTDOWN);
-            if (!ExitWindowsEx(EWX_SHUTDOWN, 0)) set_status_view(hwnd, VIEW_LOGIN);
-        }
+        if (LOWORD(wp) == ID_POWER) show_power_dialog(hwnd);
         if (preview && LOWORD(wp) == ID_DONE && !finishing) {
             finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd, profiles_count()>1 ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE);
         }
@@ -614,9 +735,13 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         }
         return 0;
     case WM_TIMER:
+        if (wp==2 && preview_power) {
+            KillTimer(hwnd,2); show_power_dialog(hwnd); return 0;
+        }
         if (stop_event && WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
             DestroyWindow(hwnd); return 0;
         }
+        if(power_dialog_active()) return 0;
         if (status_view == VIEW_LOGIN && !finishing && ready_event && WaitForSingleObject(ready_event, 0) == WAIT_OBJECT_0) {
             finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd, profiles_count()>1 ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE);
         }
@@ -640,10 +765,15 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
                 InvalidateRect(hwnd, NULL, FALSE);
             }
         }
+        try_single_account_logon();
         maintain_topmost(hwnd);
         servicing_logon = FALSE;
         return 0;
     case WM_DISPLAYCHANGE:
+        compact_selected=TRUE;
+        power_dialog_close();
+        profile_page=selected_profile/page_size();
+        position_profile_navigation(hwnd);
         SetWindowPos(hwnd, NULL, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), SWP_NOZORDER | SWP_NOACTIVATE);
         login_geometry(&x, &y, &width);
         if (status_view == VIEW_LOGIN && native_logon_attached() && !native_logon_layout(x, y, width)) {
@@ -651,16 +781,19 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             native_logon_restore(TRUE);
             ShowWindow(GetDlgItem(hwnd, ID_NATIVE), SW_HIDE);
         }
-        SetWindowPos(GetDlgItem(hwnd, ID_NATIVE), NULL, sx(625), sy(572), sx(150), sy(23), SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(GetDlgItem(hwnd, ID_NATIVE), NULL, rx(625), by(572), 150, 23, SWP_NOZORDER | SWP_NOACTIVATE);
         if (preview) {
-            SetWindowPos(GetDlgItem(hwnd, 201), NULL, x, y, width - sx(60), sy(22), SWP_NOZORDER | SWP_NOACTIVATE);
-            SetWindowPos(GetDlgItem(hwnd, ID_DONE), NULL, sx(625), sy(572), sx(150), sy(23), SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(GetDlgItem(hwnd, 201), NULL, x, y, width - 60, 22, SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(GetDlgItem(hwnd, ID_DONE), NULL, rx(625), by(572), 150, 23, SWP_NOZORDER | SWP_NOACTIVATE);
         }
         position_arrow(hwnd);
-        SetWindowPos(GetDlgItem(hwnd, ID_POWER), NULL, sx(25), sy(526), sx(245), sy(29), SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(GetDlgItem(hwnd, ID_PREV), NULL, cx(720), cy(455), 25, 24, SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(GetDlgItem(hwnd, ID_NEXT), NULL, cx(750), cy(455), 25, 24, SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(GetDlgItem(hwnd, ID_POWER), NULL, 25, by(526), 245, 29, SWP_NOZORDER | SWP_NOACTIVATE);
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
     case WM_DESTROY:
+        power_dialog_close();
         if (escape_hotkey) UnregisterHotKey(hwnd, 1);
         if (close_hotkey) UnregisterHotKey(hwnd, 2);
         KillTimer(hwnd, TICK); release_logon(); screen = NULL;
@@ -678,7 +811,7 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if (!((DWORD)lp & 0x80000000UL) && enabled() && !FindWindowA("Welcome95.Screen", NULL)) {
             status_view = VIEW_SHUTDOWN;
             screen = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "Welcome95.Screen", APP,
-                WS_POPUP | WS_VISIBLE, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
+                WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
                 NULL, NULL, instance, NULL);
             if (screen) UpdateWindow(screen);
         }
@@ -768,6 +901,7 @@ static void release_ui_fonts(void)
     DeleteObject(status_font); DeleteObject(welcome_font); DeleteObject(title_font);
     DeleteObject(body_font); DeleteObject(small_font);
     bundled_fonts_release();
+    power_operations_release();
 }
 
 int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int show)
@@ -796,7 +930,8 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
     }
     preview_status = !lstrcmpiA(arguments, "/preview-single") || !lstrcmpiA(arguments, "/preview-multi") ||
         !lstrcmpiA(arguments, "/preview-shutdown");
-    preview = !lstrcmpiA(arguments, "/preview") || preview_status;
+    preview_power = !lstrcmpiA(arguments,"/preview-power");
+    preview = !lstrcmpiA(arguments, "/preview") || preview_status || preview_power;
     if (!lstrcmpiA(arguments, "/preview-single")) status_view = VIEW_WELCOME_SINGLE;
     if (!lstrcmpiA(arguments, "/preview-multi")) status_view = VIEW_WELCOME_MULTI;
     if (!lstrcmpiA(arguments, "/preview-shutdown")) status_view = VIEW_SHUTDOWN;
@@ -825,16 +960,7 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
     }
     profiles_load();
     bundled_fonts_load(instance);
-    welcome_font = CreateFontA(-font_pixels(36), 0, 0, 0, FW_BOLD, TRUE, FALSE, FALSE, DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
-    title_font = CreateFontA(-font_pixels(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
-    body_font = CreateFontA(-sy(20), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
-    small_font = CreateFontA(-font_pixels(9), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
-    status_font = CreateFontA(-font_pixels(8), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
+    create_ui_fonts();
     zero_memory(&cls, sizeof(cls));
     cls.hInstance = instance; cls.hCursor = LoadCursor(NULL, IDC_ARROW);
     cls.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
@@ -847,7 +973,7 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
         window = CreateWindowA(cls.lpszClassName, APP, WS_OVERLAPPED, 0, 0, 0, 0, NULL, NULL, instance, NULL);
     } else if (welcome || preview) {
         window = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, cls.lpszClassName, APP,
-            WS_POPUP | WS_VISIBLE, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
+            WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
             NULL, NULL, instance, NULL);
         screen = window;
     } else {
@@ -857,7 +983,9 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
     }
     if (!window) { release_ui_fonts(); return 1; }
     UpdateWindow(window);
+    if(preview_power) SetTimer(window,2,200,NULL);
     while (GetMessageA(&message, NULL, 0, 0) > 0) {
+        if(power_dialog_translate(&message)) continue;
         if ((welcome || preview) || !IsDialogMessageA(window, &message)) {
             TranslateMessage(&message); DispatchMessageA(&message);
         }

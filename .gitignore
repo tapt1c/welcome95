@@ -10,3 +10,7 @@ __pycache__/
 /profiles-test.log
 
 /render-test.log
+
+/power-test.log
+/dos-test.log
+/layout-test.log

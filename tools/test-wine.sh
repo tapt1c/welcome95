@@ -30,7 +30,7 @@ fi
 resource_compiler="$(dirname "$compiler")/x86_64-w64-mingw32-windres"
 if command -v x86_64-w64-mingw32-windres >/dev/null 2>&1; then resource_compiler=x86_64-w64-mingw32-windres; fi
 make test-helper64 TEST_CC="$compiler" TEST_WINDRES="$resource_compiler"
-rm -f native-logon-test.log topmost-test.log fonts-test.log profiles-test.log render-test.log build/test-display
+rm -f native-logon-test.log topmost-test.log fonts-test.log profiles-test.log render-test.log power-test.log dos-test.log layout-test.log build/test-display
 "$xvfb" -displayfd 3 -screen 0 "${WELCOME95_TEST_SCREEN:-800x600x24}" -nolisten tcp \
     3>build/test-display >build/xvfb-test.log 2>&1 &
 display_pid=$!
@@ -56,10 +56,13 @@ run_wine build/topmost_test64.exe
 run_wine build/fonts_test64.exe
 run_wine build/profiles_test64.exe
 run_wine build/render_test64.exe
+run_wine build/power_test64.exe
+run_wine build/dos_test64.exe
+run_wine build/layout_test64.exe
 python3 - <<'PY'
 from pathlib import Path
 count = 0
-for name in ('native-logon-test.log', 'topmost-test.log', 'fonts-test.log', 'profiles-test.log', 'render-test.log'):
+for name in ('native-logon-test.log', 'topmost-test.log', 'fonts-test.log', 'profiles-test.log', 'render-test.log', 'power-test.log', 'dos-test.log', 'layout-test.log'):
     lines = Path(name).read_text().splitlines()
     if not lines or any(not line.startswith('PASS: ') for line in lines):
         raise SystemExit(f'FAIL: {name}: missing or failed checks')

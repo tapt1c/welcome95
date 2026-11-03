@@ -41,7 +41,7 @@ void topmost_test_entry(void)
         10, 10, 200, 100, NULL, NULL, current, NULL);
     login_window = CreateWindowExA(WS_EX_TOPMOST, "STATIC", "Synthetic native controls", WS_POPUP | WS_VISIBLE,
         300, 250, 200, 30, NULL, NULL, current, NULL);
-    test_check(font_pixels(14)<=sy(20) && font_pixels(9)<=sy(13), "font heights fit the scaled account and footer cells");
+    test_check(font_pixels(14)<=20 && font_pixels(9)<=13, "font heights fit the fixed account and footer cells");
     test_check(canvas && competitor && login_window, "create competing desktop windows");
     if (!canvas || !competitor || !login_window) { CloseHandle(test_output); ExitProcess(1); }
     maintain_topmost(canvas);
@@ -65,7 +65,7 @@ void topmost_test_entry(void)
     test_check(GetForegroundWindow() == foreground, "restoring priority preserves error-dialog focus");
     profiles_remember("First"); profiles_remember("Second");
     selected_profile = 0; profile_page = 0; pending_profile = FALSE; preview = FALSE;
-    welcome_proc(canvas, WM_LBUTTONDOWN, 0, MAKELPARAM(sx(440), sy(profile_top(1)+10)));
+    welcome_proc(canvas, WM_LBUTTONDOWN, 0, MAKELPARAM(card_x(440), row_y(profile_top(1)+10)));
     test_check(selected_profile == 1 && pending_profile,
         "account click queues selection even when native attachment is unavailable");
     DestroyWindow(popup);
