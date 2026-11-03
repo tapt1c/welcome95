@@ -23,6 +23,7 @@ static struct {
     int count, edits, passwords;
     BOOL layout_valid;
     int layout_x, layout_y, layout_width;
+    int field_x, field_y;
     CONTROL_STATE children[MAX_CONTROLS];
     char name[128];
 } saved;
@@ -33,6 +34,13 @@ static int window_region_box(RECT *box)
 {
     if (!saved.region_probe || GetWindowRgn(saved.dialog, saved.region_probe) == ERROR) return ERROR;
     return GetRgnBox(saved.region_probe, box);
+}
+
+static BOOL client_rectangle(HWND window,RECT *rectangle)
+{
+    if(!GetClientRect(window,rectangle)) return FALSE;
+    MapWindowPoints(window,NULL,(POINT *)rectangle,2);
+    return TRUE;
 }
 
 static void diagnose(const char *reason)
@@ -66,6 +74,15 @@ static void diagnose(const char *reason)
             (GetDeviceCaps(display,RASTERCAPS)&RC_PALETTE)!=0,GetACP());
         WriteFile(file,line,(DWORD)lstrlenA(line),&written,NULL);
         ReleaseDC(NULL,display);
+    }
+    if(IsWindow(saved.dialog)) {
+        RECT window,client;
+        if(GetWindowRect(saved.dialog,&window) && GetClientRect(saved.dialog,&client)) {
+            wsprintfA(line,"  dialog size=%dx%d client=%dx%d style=%08lx exstyle=%08lx\r\n",
+                window.right-window.left,window.bottom-window.top,client.right,client.bottom,
+                GetWindowLongA(saved.dialog,GWL_STYLE),GetWindowLongA(saved.dialog,GWL_EXSTYLE));
+            WriteFile(file,line,(DWORD)lstrlenA(line),&written,NULL);
+        }
     }
     if(IsWindow(saved.password)) {
         RECT field,clip; POINT point; HWND hit;
@@ -212,24 +229,19 @@ void native_logon_restore(BOOL reveal_original)
 
 static BOOL layout_matches(int x, int y, int width, int height)
 {
-    RECT rectangle, field, clipping, expected;
-    POINT origin;
+    RECT rectangle, field, clipping, expected, parent_client;
     int index;
     if (!saved.layout_valid || saved.layout_x != x || saved.layout_y != y || saved.layout_width != width ||
-        !GetWindowRect(saved.dialog, &rectangle) || rectangle.left != x || rectangle.top != y ||
-        rectangle.right-rectangle.left != width || rectangle.bottom-rectangle.top != height ||
-        (GetWindowLongA(saved.dialog, GWL_STYLE) & (WS_CAPTION | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | DS_MODALFRAME)) ||
-        (GetWindowLongA(saved.dialog, GWL_EXSTYLE) & (WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_STATICEDGE)) ||
+        !GetWindowRect(saved.dialog, &rectangle) ||
+        rectangle.right-rectangle.left != saved.rectangle.right-saved.rectangle.left ||
+        rectangle.bottom-rectangle.top != saved.rectangle.bottom-saved.rectangle.top ||
         !(GetWindowLongA(saved.password, GWL_STYLE) & WS_VISIBLE) ||
-        (GetWindowLongA(saved.password, GWL_STYLE) & WS_BORDER) ||
-        (GetWindowLongA(saved.password, GWL_EXSTYLE) & (WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME)) ||
-        !GetWindowRect(saved.password, &field)) return FALSE;
-    MapWindowPoints(NULL, saved.dialog, (POINT *)&field, 2);
-    SetRect(&expected, 0, 0, width-60, height);
+        !client_rectangle(saved.password, &field)) return FALSE;
+    SetRect(&expected, x, y, x+width-60, y+height);
     if (!EqualRect(&field, &expected)) return FALSE;
-    origin.x=0; origin.y=0;
-    if (!ClientToScreen(saved.dialog, &origin)) return FALSE;
-    OffsetRect(&expected, origin.x-rectangle.left, origin.y-rectangle.top);
+    if(!client_rectangle(saved.dialog,&parent_client) || field.left<parent_client.left ||
+       field.top<parent_client.top || field.right>parent_client.right || field.bottom>parent_client.bottom) return FALSE;
+    OffsetRect(&expected, -rectangle.left, -rectangle.top);
     if (window_region_box(&clipping) != SIMPLEREGION || !EqualRect(&clipping, &expected)) return FALSE;
     for (index=0; index<saved.count; ++index)
         if (saved.children[index].window != saved.password &&
@@ -240,35 +252,44 @@ static BOOL layout_matches(int x, int y, int width, int height)
 BOOL native_logon_layout(int x, int y, int width)
 {
     HRGN region;
-    RECT rectangle;
-    POINT origin;
-    int dx, dy, index, gap, height;
+    RECT rectangle, field, client, parent_client;
+    POINT origin, field_origin;
+    int dx, dy, index, gap, height, extra_width, extra_height;
     if (!native_logon_attached() || width < 160) return FALSE;
     gap = 60;
     height = 22;
     if (layout_matches(x, y, width, height)) return TRUE;
 
-    set_style(saved.dialog, GWL_STYLE, GetWindowLongA(saved.dialog, GWL_STYLE) &
-        ~(WS_CAPTION | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME | WS_SYSMENU | DS_MODALFRAME));
-    set_style(saved.dialog, GWL_EXSTYLE, GetWindowLongA(saved.dialog, GWL_EXSTYLE) &
-        ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_STATICEDGE));
-    set_style(saved.password, GWL_STYLE, GetWindowLongA(saved.password, GWL_STYLE) & ~WS_BORDER);
-    set_style(saved.password, GWL_EXSTYLE, GetWindowLongA(saved.password, GWL_EXSTYLE) &
-        ~(WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME));
+    /* Keep the provider's normal window size and nonclient styles. Only its
+       real Edit's client area is exposed; captions/borders remain outside the
+       region. Legacy dialogs need not function as a 22px borderless window. */
+    origin.x=origin.y=field_origin.x=field_origin.y=0;
+    if(!GetWindowRect(saved.dialog,&rectangle) || !ClientToScreen(saved.dialog,&origin) ||
+       !GetWindowRect(saved.password,&field) || !ClientToScreen(saved.password,&field_origin) ||
+       !GetClientRect(saved.password,&client)) return FALSE;
+    dx=x-(origin.x-rectangle.left)-saved.field_x-(field_origin.x-field.left);
+    dy=y-(origin.y-rectangle.top)-saved.field_y-(field_origin.y-field.top);
+    extra_width=field.right-field.left-client.right;
+    extra_height=field.bottom-field.top-client.bottom;
     for (index = 0; index < saved.count; ++index) {
         HWND child = saved.children[index].window;
         if (child != saved.password) ShowWindow(child, SW_HIDE);
     }
-    if (!SetWindowPos(saved.dialog, HWND_TOPMOST, x, y, width, height,
-                      SWP_FRAMECHANGED | SWP_NOACTIVATE)) return FALSE;
-    if (!SetWindowPos(saved.password, NULL, 0, 0, width - gap, height,
-                      SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)) return FALSE;
-    if (!SetWindowPos(saved.submit, NULL, width - 52, 0, 52, 30,
-                      SWP_NOZORDER | SWP_NOACTIVATE)) return FALSE;
-    origin.x = 0; origin.y = 0;
-    if (!ClientToScreen(saved.dialog, &origin) || !GetWindowRect(saved.dialog, &rectangle)) return FALSE;
-    dx = origin.x - rectangle.left; dy = origin.y - rectangle.top;
-    region = CreateRectRgn(dx, dy, dx + width - gap, dy + height);
+    if (!SetWindowPos(saved.password, NULL, saved.field_x, saved.field_y,
+                      width-gap+extra_width, height+extra_height, SWP_NOZORDER | SWP_NOACTIVATE)) return FALSE;
+    if (!SetWindowPos(saved.dialog, HWND_TOPMOST, dx, dy,
+                      saved.rectangle.right-saved.rectangle.left,saved.rectangle.bottom-saved.rectangle.top,
+                      SWP_NOACTIVATE)) return FALSE;
+    if (!client_rectangle(saved.password, &field) || !GetWindowRect(saved.dialog, &rectangle)) return FALSE;
+    if(field.left!=x || field.top!=y || field.right-field.left!=width-gap || field.bottom-field.top!=height) {
+        diagnose("native client geometry mismatch"); return FALSE;
+    }
+    if(!client_rectangle(saved.dialog,&parent_client) || field.left<parent_client.left ||
+       field.top<parent_client.top || field.right>parent_client.right || field.bottom>parent_client.bottom) {
+        diagnose("password outside native client"); return FALSE;
+    }
+    OffsetRect(&field, -rectangle.left, -rectangle.top);
+    region = CreateRectRgn(field.left,field.top,field.right,field.bottom);
     if (!region) return FALSE;
     /* The system owns the region after a successful SetWindowRgn. Outside these
        password rectangle the native dialog is invisible AND does not receive clicks. */
@@ -344,7 +365,7 @@ BOOL native_logon_attach(HWND dialog, int x, int y, int width)
 {
     int index;
     DWORD_PTR result;
-    LONG style, exstyle;
+    HRGN hidden;
     native_logon_restore(FALSE);
     saved.dialog = dialog;
     saved.count = 0; saved.edits = 0; saved.passwords = 0;
@@ -371,25 +392,24 @@ BOOL native_logon_attach(HWND dialog, int x, int y, int width)
     if (!saved.region_probe) { native_logon_restore(FALSE); return FALSE; }
     saved.had_region = GetWindowRgn(dialog, saved.region) != ERROR;
     saved.attached = TRUE;
-    ShowWindow(dialog, SW_HIDE);
-    style = saved.style & ~(WS_CAPTION | WS_BORDER | WS_DLGFRAME | WS_THICKFRAME |
-                             WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | DS_MODALFRAME);
-    exstyle = saved.exstyle & ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_STATICEDGE);
-    if (!set_style(dialog, GWL_STYLE, style) || !set_style(dialog, GWL_EXSTYLE, exstyle)) {
-        diagnose("cannot change dialog styles"); native_logon_restore(TRUE); return FALSE;
+    hidden=CreateRectRgn(0,0,0,0);
+    if(!hidden || !SetWindowRgn(dialog,hidden,TRUE)) {
+        if(hidden) DeleteObject(hidden);
+        diagnose("cannot clip native dialog"); native_logon_restore(TRUE); return FALSE;
     }
     for (index = 0; index < saved.count; ++index) {
         HWND child = saved.children[index].window;
-        if (child == saved.password) continue;
+        if (child == saved.password) {
+            saved.field_x=saved.children[index].rectangle.left;
+            saved.field_y=saved.children[index].rectangle.top;
+            continue;
+        }
         ShowWindow(child, SW_HIDE);
         if (GetWindowLongA(child, GWL_ID) == IDCANCEL) EnableWindow(child, FALSE);
     }
-    set_style(saved.password, GWL_STYLE, GetWindowLongA(saved.password, GWL_STYLE) & ~WS_BORDER);
-    set_style(saved.password, GWL_EXSTYLE, GetWindowLongA(saved.password, GWL_EXSTYLE) & ~(WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME));
     if (!native_logon_layout(x, y, width)) {
         diagnose("cannot place password field"); native_logon_restore(TRUE); return FALSE;
     }
-    ShowWindow(dialog, SW_SHOWNA);
     native_logon_repaint();
     diagnose("attached");
     native_logon_focus();

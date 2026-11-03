@@ -186,3 +186,13 @@ import it or add it back to the PE whitelist. Use GetWindowRgn + GDI32.GetRgnBox
 with a separate reusable probe region; preserve the original restoration region.
 MinGW headers/import libraries and a passing Wine run do not establish Win95 API
 availability. Check new imports against target evidence before allowing them.
+
+
+The target Win95 dialog retained a (3,22) client origin after removing chrome.
+Shrinking the outer window to 22px clipped the entire Edit outside its parent.
+Keep original native dialog dimensions and frame/Edit styles; crop only the
+actual Edit client pixels. Measure both nonclient offsets, preserve the Edit's
+native client anchor, and verify containment in the parent's client rectangle.
+Test a legacy WM_NCCALCSIZE fixture that retains (3,22), both reported control
+inventories (14 controls / Edit 23 and 8 controls / Edit 31), real system mouse
+and keyboard events, and visible synthetic mask pixels. Focus alone is inadequate.

@@ -299,3 +299,25 @@ The PE checker explicitly rejects GetWindowRgnBox; it was also run against the
 tracked c77ab64 EXE and rejected its exact USER32 import. Both rebuilt production
 images pass. Wine does not establish target export availability: repeat actual
 Win95 launch, native field typing and power repaint after updating the EXE.
+
+
+## Logged Win95 client offset and actual keyboard input
+
+Current suite: 370 checks per resolution (48 native, 44 session/lifecycle).
+Both native fixtures retain a (3,22) client origin via WM_NCCALCSIZE even if frame
+styles are stripped. This reproduces the logged region (3,22)-(170,44) below a
+22px outer window. Compiling the fixture against 8d66912 reproduces failed field
+hit tests and client positioning; the new crop keeps original window dimensions
+and styles and exposes only the measured Edit client. Check both reported forms
+(Edit 23 in 14 controls; Edit 31 in 8 controls) and original-region restoration.
+
+The external-provider fixture uses the same legacy origin, real SetCursorPos /
+mouse_event / keybd_event input and metadata-only EM_GETMODIFY checks. Mask pixels
+must be visible inside the field. A queued activation after the provider hides its
+Edit is processed before the following normal priority pass. Tests do not read
+real passwords or dispatch real authentication/power.
+
+On Win95, click the actual field and type: caret and stars must appear; perform
+correct and incorrect login on both provider forms. Then repeat logoff, hidden
+rescue and power cancel. Diagnostics now record parent outer/client sizes too;
+the exposed client rectangle must fit inside both the parent client and window.

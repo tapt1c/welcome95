@@ -6,7 +6,22 @@
 static HANDLE output;
 static int failures;
 static WNDPROC original_dialog_proc;
+static WNDPROC system_dialog_proc;
 static int layout_changes;
+static LRESULT CALLBACK legacy_nonclient(HWND window,UINT message,WPARAM wp,LPARAM lp)
+{
+    if(message==WM_NCCALCSIZE) {
+        RECT *client=wp ? &((NCCALCSIZE_PARAMS *)lp)->rgrc[0] : (RECT *)lp;
+        client->left+=3; client->top+=22; client->right-=3; client->bottom-=3;
+        if(client->bottom<client->top) client->bottom=client->top;
+        return 0;
+    }
+    return CallWindowProcA(system_dialog_proc,window,message,wp,lp);
+}
+static void client_rect(HWND window,RECT *rectangle)
+{
+    GetClientRect(window,rectangle); MapWindowPoints(window,NULL,(POINT *)rectangle,2);
+}
 static LRESULT CALLBACK count_layout(HWND window,UINT message,WPARAM wp,LPARAM lp)
 {
     if(message==WM_WINDOWPOSCHANGING || message==WM_STYLECHANGING) ++layout_changes;
@@ -51,9 +66,13 @@ void test_entry(void)
     check(dialog != NULL, "create a native dialog fixture");
     if (!dialog) { CloseHandle(output); ExitProcess(1); }
     SetWindowTextA(dialog, "Synthetic logon fixture");
+    /* The target log retains a 3,22 client origin after removing the frame.
+       Model that legacy behavior rather than Wine's modern frame recalculation. */
+    system_dialog_proc=(WNDPROC)SetWindowLongPtrA(dialog,GWLP_WNDPROC,(LONG_PTR)legacy_nonclient);
+    SetWindowPos(dialog,NULL,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);
     username = CreateWindowA("EDIT", "Daniel", 0x50010480UL,
         20, 20, 150, 24, dialog, (HMENU)21, instance, NULL);
-    password = CreateWindowA("EDIT", "synthetic-test-only", 0x500104a0UL,
+    password = CreateWindowExA(WS_EX_CLIENTEDGE,"EDIT", "synthetic-test-only", 0x500104a0UL,
         20, 55, 150, 24, dialog, (HMENU)23, instance, NULL);
     submit = CreateWindowA("BUTTON", "OK", 0x50010000UL,
         190, 20, 70, 24, dialog, (HMENU)IDOK, instance, NULL);
@@ -89,31 +108,42 @@ void test_entry(void)
     check(IsWindowVisible(password) && !IsWindowVisible(submit), "native password is visible and the original OK is hidden");
     check(!IsWindowVisible(username) && !IsWindowVisible(cancel), "original account edit and Cancel are hidden");
     check(!IsWindowEnabled(cancel), "hidden Cancel is disabled");
-    check(!(GetWindowLongA(dialog, GWL_STYLE) & WS_CAPTION), "native title bar is removed");
+    check((GetWindowLongA(dialog, GWL_STYLE)&WS_CAPTION)==(style&WS_CAPTION),
+          "the native frame style remains intact while its pixels are clipped");
     region = CreateRectRgn(0, 0, 0, 0);
     check(GetWindowRgn(dialog, region) != ERROR, "native dialog has an explicit clipping region");
-    check(PtInRegion(region, 10, 10) && !PtInRegion(region, 250, 10) && !PtInRegion(region, 260-60+2, 10),
+    GetWindowRect(dialog,&rectangle); client_rect(password,&live_password_rectangle);
+    OffsetRect(&live_password_rectangle,-rectangle.left,-rectangle.top);
+    check(PtInRegion(region,live_password_rectangle.left+5,live_password_rectangle.top+5) &&
+          !PtInRegion(region,10,10) && !PtInRegion(region,live_password_rectangle.right+2,live_password_rectangle.top+5),
           "only the actual password field is exposed; all native dialog chrome is clipped");
     check(native_logon_layout(320, 280, 280), "relayout after screen geometry changes");
     GetWindowRect(dialog, &rectangle);
-    check(rectangle.left == 320 && rectangle.top == 280 && rectangle.right - rectangle.left == 280,
+    client_rect(password,&live_password_rectangle);
+    check(live_password_rectangle.left==320 && live_password_rectangle.top==280 &&
+          live_password_rectangle.right-live_password_rectangle.left==220 && live_password_rectangle.bottom-live_password_rectangle.top==22,
           "native controls follow requested welcome coordinates");
-    GetWindowRect(password,&live_password_rectangle);
-    check(rectangle.bottom-rectangle.top==live_password_rectangle.bottom-live_password_rectangle.top,
-        "native container has no extra strip below the password field");
+    check(rectangle.right-rectangle.left==original.right-original.left && rectangle.bottom-rectangle.top==original.bottom-original.top,
+        "the provider keeps its full original window size rather than a zero-height legacy client");
+    {
+        POINT hit; hit.x=325; hit.y=285;
+        check(WindowFromPoint(hit)==password,"the actual Edit receives hit tests with the reported Win95 3,22 nonclient offset");
+    }
 
     /* A provider may refresh its controls without moving the outer dialog. */
     ShowWindow(password, SW_HIDE);
     SetWindowPos(password, NULL, 20, 55, 150, 24, SWP_NOZORDER | SWP_NOACTIVATE);
     check(native_logon_layout(320, 280, 280) && IsWindowVisible(password),
           "repair a provider-hidden password even when the outer layout is cached");
-    GetWindowRect(password, &rectangle);
-    MapWindowPoints(NULL, dialog, (POINT *)&rectangle, 2);
-    check(rectangle.left == 0 && rectangle.top == 0 && rectangle.right == 220 && rectangle.bottom == 22,
+    client_rect(password,&rectangle);
+    check(rectangle.left==320 && rectangle.top==280 && rectangle.right-rectangle.left==220 && rectangle.bottom-rectangle.top==22,
           "repair a provider-moved password without changing its parent");
     SetWindowRgn(dialog, NULL, FALSE);
-    check(native_logon_layout(320, 280, 280) && GetWindowRgn(dialog, region) != ERROR &&
-          PtInRegion(region, 10, 10) && !PtInRegion(region, 225, 10),
+    native_logon_layout(320,280,280);
+    GetWindowRect(dialog,&rectangle); client_rect(password,&live_password_rectangle);
+    OffsetRect(&live_password_rectangle,-rectangle.left,-rectangle.top);
+    check(GetWindowRgn(dialog, region) != ERROR &&
+          PtInRegion(region,live_password_rectangle.left+5,live_password_rectangle.top+5) && !PtInRegion(region,10,10),
           "rebuild a clipping region removed by a provider refresh");
     GetWindowTextA(password, text, sizeof(text));
     check(!lstrcmpA(text, "synthetic-test-only"), "repair preserves synthetic input instead of clearing it");
@@ -185,6 +215,21 @@ void test_entry(void)
     ShowWindow(dialog, SW_HIDE);
     native_logon_restore(FALSE);
     check(!IsWindowVisible(dialog), "cleanup does not resurrect a dialog hidden by Windows");
+    native_logon_restore(FALSE);
+    for(index=0;index<9;++index) DestroyWindow(dormant[index]);
+    DestroyWindow(hidden);
+    SetWindowLongA(username,GWL_ID,30); SetWindowLongA(password,GWL_ID,31);
+    CreateWindowA("STATIC","",WS_CHILD|WS_VISIBLE,0,0,8,8,dialog,(HMENU)32,instance,NULL);
+    CreateWindowA("STATIC","User",WS_CHILD|WS_VISIBLE,0,20,20,20,dialog,(HMENU)200,instance,NULL);
+    CreateWindowA("STATIC","Password",WS_CHILD|WS_VISIBLE,0,55,20,20,dialog,(HMENU)201,instance,NULL);
+    CreateWindowA("STATIC","Information",WS_CHILD|WS_VISIBLE,0,80,20,20,dialog,(HMENU)202,instance,NULL);
+    ShowWindow(dialog,SW_SHOWNA);
+    check(native_logon_attach(dialog,345,250,227),"attach the second reported 8-control form with Edit IDs 30 and 31");
+    {
+        POINT hit; hit.x=350; hit.y=255;
+        check(WindowFromPoint(hit)==password && GetParent(password)==dialog,
+            "the second native form exposes its own password Edit at the same welcome anchor");
+    }
     native_logon_restore(FALSE);
     DestroyWindow(dialog);
     DeleteObject(region);

@@ -6,6 +6,17 @@ static int failures,positions;
 static DWORD canvas_destroyed_at;
 static WNDPROC original_password_proc;
 static DWORD password_paints;
+static WNDPROC system_provider_proc;
+static LRESULT CALLBACK legacy_provider_frame(HWND window,UINT message,WPARAM wp,LPARAM lp)
+{
+    if(message==WM_NCCALCSIZE) {
+        RECT *client=wp ? &((NCCALCSIZE_PARAMS *)lp)->rgrc[0] : (RECT *)lp;
+        client->left+=3; client->top+=22; client->right-=3; client->bottom-=3;
+        if(client->bottom<client->top) client->bottom=client->top;
+        return 0;
+    }
+    return CallWindowProcA(system_provider_proc,window,message,wp,lp);
+}
 static LRESULT CALLBACK count_password_paints(HWND window,UINT message,WPARAM wp,LPARAM lp)
 {
     if(message==WM_PAINT) ++password_paints;
@@ -167,6 +178,8 @@ void session_test_entry(void)
             form->cx=250; form->cy=110;
             provider=CreateDialogIndirectParamA(instance,form,NULL,provider_proc,0);
             SetWindowTextA(provider,"Welcome95 synthetic provider");
+            system_provider_proc=(WNDPROC)SetWindowLongPtrA(provider,GWLP_WNDPROC,(LONG_PTR)legacy_provider_frame);
+            SetWindowPos(provider,NULL,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);
             CreateWindowA("EDIT","First",WS_CHILD|WS_VISIBLE,20,20,150,22,provider,(HMENU)21,instance,NULL);
             CreateWindowA("EDIT","synthetic-only",WS_CHILD|WS_VISIBLE|ES_PASSWORD,20,50,150,22,provider,(HMENU)23,instance,NULL);
             original_password_proc=(WNDPROC)SetWindowLongPtrA(GetDlgItem(provider,23),GWLP_WNDPROC,(LONG_PTR)count_password_paints);
@@ -309,7 +322,10 @@ void session_test_entry(void)
     {
         HWND field=GetDlgItem(provider,23); POINT hit; RECT rectangle; DWORD_PTR reply=0;
         SendMessageA(provider,WM_USER+40,0,0);
-        allow_logon(); maintain_topmost(screen); pump(60);
+        allow_logon(); maintain_topmost(screen); pump(100);
+        /* The provider can queue activation of the canvas when hiding its Edit.
+           Service the following priority pass as the real 100ms timer does. */
+        maintain_topmost(screen); pump(20);
         GetWindowRect(field,&rectangle); hit.x=rectangle.left+8; hit.y=rectangle.top+8;
         check(IsWindowVisible(field) && WindowFromPoint(hit)==field,
             "a refreshed cross-process password Edit is visible and receives mouse hit tests above the canvas");
@@ -320,6 +336,23 @@ void session_test_entry(void)
         SendMessageA(screen,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(x-1,y+8)); pump(60);
         check(SendMessageTimeoutA(provider,WM_USER+41,0,0,SMTO_ABORTIFHUNG,200,&reply) && reply,
             "the provider thread owns keyboard focus in its repaired native password Edit");
+        {
+            DWORD_PTR modified=0; HDC field_dc; COLORREF ink; int px,py,ink_pixels=0;
+            /* Only this owned synthetic fixture is cleared. Real input remains
+               in the provider; verify actual system mouse/keyboard delivery. */
+            SendMessageA(field,WM_SETTEXT,0,(LPARAM)"");
+            SetCursorPos(x+8,y+8); mouse_event(MOUSEEVENTF_LEFTDOWN,0,0,0,0); mouse_event(MOUSEEVENTF_LEFTUP,0,0,0,0);
+            pump(40); keybd_event('Q',0,0,0); keybd_event('Q',0,KEYEVENTF_KEYUP,0); pump(100);
+            check(SendMessageTimeoutA(field,EM_GETMODIFY,0,0,SMTO_ABORTIFHUNG,200,&modified) && modified,
+                "real system keyboard input reaches the external provider's Edit after a real mouse click");
+            field_dc=GetDC(field);
+            for(py=1;py<21;++py) for(px=1;px<24;++px) {
+                ink=GetPixel(field_dc,px,py);
+                if(ink!=CLR_INVALID && GetRValue(ink)<100 && GetGValue(ink)<100 && GetBValue(ink)<100) ++ink_pixels;
+            }
+            ReleaseDC(field,field_dc);
+            check(ink_pixels>3,"a typed synthetic password paints visible mask pixels inside the welcome field");
+        }
         {
             DWORD_PTR before=0;
             SendMessageTimeoutA(provider,WM_USER+42,0,0,SMTO_ABORTIFHUNG,200,&before);

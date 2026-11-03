@@ -303,3 +303,41 @@ Validation: rebuilt CRT-free i386 frontend and audited both production PEs;
 45 native-control cases. Actual Windows 95 launch/login still needs repetition;
 the screenshot establishes this missing export precisely, unlike earlier UI
 recordings. Password visibility, GDI repaint and boot fixes remain in place.
+
+
+## Confirmed clipped-out password client on Win95 (current)
+
+The new user log reports a visible/enabled Edit at client rectangle (0,0,167,22),
+but the window region is (3,22)-(170,44), and hit-class is Welcome95.Screen.
+The implementation set the entire native window height to 22px. On this Win95
+provider the nonclient origin remained (3,22) after stripping its frame, leaving
+no parent client height for the password. This identifies a concrete geometry
+failure, beyond the earlier speculative child-refresh fix. The user also reports
+blind typing no longer succeeds; keyboard delivery must be checked explicitly.
+Both reported native forms are supported: 14 controls / password Edit 23 and
+8 controls / password Edit 31. No typed/password text is included in the log.
+
+Keep the full original native window size and all native dialog/Edit styles.
+Preserve the Edit's original client anchor, measure both nonclient offsets, move
+the whole dialog and resize only the Edit to expose a 167x22 client. Crop the
+window to that actual client rectangle, after verifying it fits in the parent's
+client area. Native frames stay outside the visible region; other controls remain
+hidden. Attachment no longer hides/shows the whole provider dialog. Restore and
+rescue still return the original complete form. Diagnostics now include parent
+window/client sizes. Boot/startup, dimming and the import correction are retained.
+
+Regression evidence: a fixed (3,22) WM_NCCALCSIZE fixture reproduces the target
+behavior. Compiled against 8d66912's actual native_logon.c, it fails the field hit
+test, original-size and second-form exposure checks. The corrected implementation
+passes both forms, preserves the original nonrectangular region and remains idle
+without window/style churn. The separate provider test now receives real system
+mouse/keyboard events, checks EM_GETMODIFY metadata and visible synthetic mask
+pixels, and services queued activation before the next priority pass.
+
+Validation: 370 checks per resolution under Wine64 at the three standard modes,
+including 48 native and 44 cross-process/lifecycle cases. Production remains x86,
+PE 4.0, no CRT, with the existing 173 reviewed imports. This is a reproduction of
+the logged Win95 geometry; actual Win95 login still needs a repeat on the VM.
+
+- [ ] Confirm caret, visible stars, correct-password success and wrong-password retry
+      on the user's actual network and Windows logon dialogs.
