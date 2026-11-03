@@ -23,7 +23,7 @@ build/native_logon_test.exe: tests/native_logon_test.c src/native_logon.c src/na
 	$(CC) $(CFLAGS) tests/native_logon_test.c src/native_logon.c -o $@ $(LDFLAGS) -Wl,--entry,_test_entry -luser32 -lgdi32 -lkernel32
 
 # 64-bit test executables run under Wine64; production remains a Win95 x86 EXE.
-test-helper64: build/native_logon_test64.exe build/topmost_test64.exe build/fonts_test64.exe
+test-helper64: build/native_logon_test64.exe build/topmost_test64.exe build/fonts_test64.exe build/profiles_test64.exe build/render_test64.exe
 
 build/native_logon_test64.exe: tests/native_logon_test.c src/native_logon.c src/native_logon.h src/profiles.c src/profiles.h src/fonts.c src/fonts.h Makefile
 	mkdir -p build
@@ -50,3 +50,9 @@ build/fonts_test64.exe: tests/fonts_test.c src/fonts.c src/fonts.h build/assets6
 
 build/preview64.exe: src/welcome95.c src/native_logon.c src/profiles.c src/fonts.c build/assets64.o Makefile
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) src/welcome95.c src/native_logon.c src/profiles.c src/fonts.c build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,welcome_entry -luser32 -lgdi32 -ladvapi32 -lkernel32
+
+build/profiles_test64.exe: tests/profiles_test.c src/profiles.c src/profiles.h Makefile
+	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/profiles_test.c -o $@ -mwindows -nostdlib -Wl,--entry,profiles_test_entry -luser32 -ladvapi32 -lkernel32
+
+build/render_test64.exe: tests/render_test.c src/welcome95.c src/native_logon.c src/profiles.c src/fonts.c build/assets64.o Makefile
+	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/render_test.c src/native_logon.c src/profiles.c src/fonts.c build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,render_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32

@@ -208,18 +208,31 @@ static void label(HDC dc, HFONT font, const char *text, RECT rectangle, UINT fla
     SelectObject(dc, old);
 }
 
+static void finish_paint(HWND hwnd, PAINTSTRUCT *paint, HDC dc, HBITMAP frame, HGDIOBJ old)
+{
+    RECT area;
+    if(frame) {
+        GetClientRect(hwnd,&area);
+        BitBlt(paint->hdc,0,0,area.right,area.bottom,dc,0,0,SRCCOPY);
+        SelectObject(dc,old); DeleteObject(frame); DeleteDC(dc);
+    }
+    EndPaint(hwnd,paint);
+}
+
 static void bitmap(HDC dc, int id, int x, int y, int width, int height)
 {
-    HBITMAP image = LoadBitmapA(instance, MAKEINTRESOURCEA(id));
-    HDC memory;
-    HGDIOBJ old;
-    BITMAP info;
-    if (!image) return;
-    memory = CreateCompatibleDC(dc);
-    old = SelectObject(memory, image);
-    GetObjectA(image, sizeof(info), &info);
-    StretchBlt(dc, x, y, width, height, memory, 0, 0, info.bmWidth, info.bmHeight, SRCCOPY);
-    SelectObject(memory, old); DeleteDC(memory); DeleteObject(image);
+    HRSRC resource=FindResourceA(instance, MAKEINTRESOURCEA(id), MAKEINTRESOURCEA(2));
+    HGLOBAL memory=resource ? LoadResource(instance, resource) : NULL;
+    const BITMAPINFO *info=memory ? (const BITMAPINFO *)LockResource(memory) : NULL;
+    const BYTE *pixels;
+    int old_mode;
+    if (!info || info->bmiHeader.biBitCount!=24 || info->bmiHeader.biCompression!=BI_RGB) return;
+    pixels=(const BYTE *)info+info->bmiHeader.biSize;
+    old_mode=SetStretchBltMode(dc, COLORONCOLOR);
+    SetBrushOrgEx(dc, 0, 0, NULL);
+    StretchDIBits(dc, x,y,width,height,0,0,info->bmiHeader.biWidth,info->bmiHeader.biHeight,
+        pixels,info,DIB_RGB_COLORS,SRCCOPY);
+    if (old_mode) SetStretchBltMode(dc,old_mode);
 }
 
 static void rounded(HDC dc, RECT area, COLORREF color, COLORREF edge)
@@ -237,7 +250,11 @@ static int font_pixels(int points)
     HDC dc = GetDC(NULL);
     int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSY) : 96;
     if (dc) ReleaseDC(NULL, dc);
-    return MulDiv(points, dpi > 0 ? dpi : 96, 72);
+    {
+        int pixels=MulDiv(points, dpi>0 ? dpi : 96, 72);
+        int x=sx(pixels), y=sy(pixels);
+        return (x<y ? x : y)>0 ? (x<y ? x : y) : 1;
+    }
 }
 static BOOL russian_ui(void)
 {
@@ -290,9 +307,16 @@ static void paint_welcome(HWND hwnd)
 {
     PAINTSTRUCT paint;
     RECT area, rectangle;
-    HDC dc = BeginPaint(hwnd, &paint);
+    HDC dc, memory;
+    HBITMAP frame;
+    HGDIOBJ old=NULL;
     int band, index, top;
-    GetClientRect(hwnd, &area);
+    BeginPaint(hwnd,&paint); dc=paint.hdc;
+    GetClientRect(hwnd,&area);
+    memory=CreateCompatibleDC(dc);
+    frame=memory ? CreateCompatibleBitmap(dc,area.right,area.bottom) : NULL;
+    if(frame) { old=SelectObject(memory,frame); dc=memory; }
+    else if(memory) DeleteDC(memory);
     fill(dc, area, RGB(90,126,220));
     bitmap(dc, 100, 0, sy(78), sx(219), sy(207));
     SetRect(&rectangle, 0, 0, area.right, sy(78));
@@ -305,7 +329,7 @@ static void paint_welcome(HWND hwnd)
     if (status_view != VIEW_WELCOME_SINGLE) bitmap(dc, 126, 0, sy(504), area.right, sy(3));
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255,255,255));
     if (status_view == VIEW_WELCOME_SINGLE) {
-        paint_greeting(dc, 100, 800); EndPaint(hwnd, &paint); return;
+        paint_greeting(dc, 100, 800); finish_paint(hwnd,&paint,dc,frame,old); return;
     }
     if (status_view == VIEW_WELCOME_MULTI) {
         bitmap(dc, 124, sx(398), sy(121), sx(1)>0 ? sx(1) : 1, sy(340));
@@ -319,13 +343,13 @@ static void paint_welcome(HWND hwnd)
         SetRect(&rectangle, sx(499), sy(285), sx(775), sy(320));
         SetTextColor(dc, RGB(0,48,156));
         label(dc, status_font, russian_ui() ? "\307\340\343\360\363\347\352\340\040\353\350\367\355\373\365\040\357\340\360\340\354\345\362\360\356\342\056\056\056" : "Loading your personal settings...", rectangle, DT_LEFT | DT_WORDBREAK);
-        EndPaint(hwnd, &paint); return;
+        finish_paint(hwnd,&paint,dc,frame,old); return;
     }
     if (status_view == VIEW_SHUTDOWN) {
         paint_logo(dc, 332, 232);
         SetRect(&rectangle, sx(80), sy(338), sx(720), sy(389));
         label(dc, body_font, russian_ui() ? "\307\340\342\345\360\370\345\355\350\345\040\360\340\341\356\362\373\040\127\151\156\144\157\167\163\056\056\056" : "Windows is shutting down...", rectangle, DT_CENTER | DT_SINGLELINE);
-        EndPaint(hwnd, &paint); return;
+        finish_paint(hwnd,&paint,dc,frame,old); return;
     }
     bitmap(dc, 124, sx(398), sy(121), sx(1) > 0 ? sx(1) : 1, sy(340));
     bitmap(dc, 123, sx(243), sy(232), sx(137), sy(86));
@@ -355,7 +379,7 @@ static void paint_welcome(HWND hwnd)
     }
     SetRect(&rectangle, sx(470), sy(527), sx(775), sy(570));
     label(dc, small_font, "After you log on, you can change your settings.\nOpen Welcome95 to customize this screen.", rectangle, DT_LEFT | DT_WORDBREAK);
-    EndPaint(hwnd, &paint);
+    finish_paint(hwnd,&paint,dc,frame,old);
 }
 
 static void draw_button(DRAWITEMSTRUCT *item)
@@ -439,6 +463,7 @@ static void allow_logon(void)
     login_was_topmost = (GetWindowLongA(found, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
     login_geometry(&x, &y, &width);
     if (!prefer_native && native_logon_attach(found, x, y, width)) {
+        if (!native_logon_user_empty()) profiles_accept_native(native_logon_name());
         if (native_logon_user_empty() && !profiles_count()) {
             native_logon_restore(TRUE);
             ShowWindow(GetDlgItem(screen, ID_NATIVE), SW_SHOWNA);
@@ -448,7 +473,7 @@ static void allow_logon(void)
             if (native_logon_user_empty() && profiles_count()) {
                 selected_profile = 0; pending_profile = TRUE;
             } else {
-                selected_profile = profiles_remember(native_logon_name());
+                selected_profile = profiles_accept_native(native_logon_name());
                 if (selected_profile < 0) selected_profile = 0;
             }
             profile_page = selected_profile / 4;
@@ -800,15 +825,15 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
     }
     profiles_load();
     bundled_fonts_load(instance);
-    welcome_font = CreateFontA(-font_pixels(36), 0, 0, 0, FW_BOLD, TRUE, FALSE, FALSE, ANSI_CHARSET,
+    welcome_font = CreateFontA(-font_pixels(36), 0, 0, 0, FW_BOLD, TRUE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
-    title_font = CreateFontA(-font_pixels(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+    title_font = CreateFontA(-font_pixels(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
-    body_font = CreateFontA(-sy(20), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+    body_font = CreateFontA(-sy(20), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
-    small_font = CreateFontA(-font_pixels(9), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+    small_font = CreateFontA(-font_pixels(9), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
-    status_font = CreateFontA(-font_pixels(8), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+    status_font = CreateFontA(-font_pixels(8), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
     zero_memory(&cls, sizeof(cls));
     cls.hInstance = instance; cls.hCursor = LoadCursor(NULL, IDC_ARROW);

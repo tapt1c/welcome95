@@ -101,3 +101,34 @@ match the embedded Arial Bold Italic and Tahoma resources exactly under Wine64.
 Latest test total: 67 (36 native, 22 states/priority, 9 font tests). Preview images
 regenerated with the XP files. Acceptance/rasterization on real Win95 remains a
 target-system check, not established by font-table equality under Wine.
+
+## VGA layout, garbled cache alias and display casing
+
+The user confirmed High/True Color and that the native Windows dialog says
+Daniel. The old case-insensitive deduplication preserved an earlier uppercase
+PWL alias. Accept the native Edit spelling as authoritative without creating
+a separate Windows identity. Registry profile-directory spelling is an earlier
+fallback. Windows account matching remains case-insensitive.
+
+The old discovery added every PWL mapping as a user. Known registry profiles now
+exclude unrelated cache aliases; PWL-only discovery checks mappings exist without
+opening them. Control/undefined characters are rejected and valid non-ASCII names
+are preserved. Native UI fonts use DEFAULT_CHARSET. Exact byte provenance of the
+garbled entry in the user's screenshot is not independently established; verify
+its removal on the target rather than claim its encoding was proven.
+
+Fonts now follow the same 800x600 scaling as geometry. Source bitmaps are drawn
+through DIBs with explicit COLORONCOLOR and double buffering; avoid legacy default
+BLACKONWHITE and unsupported driver stretch modes. Native field container height
+is limited to the Edit height. Experimental custom 8-bit palette code was tested
+but discarded; it is not shipped and no pixel-perfect 256-color claim is made.
+
+Validation: 82 checks at 640x480x16 and 800x600x24 under Wine64: 37 native, 23
+canvas/states, 9 fonts, 10 profile-source/case checks and 3 actual GDI pixel checks.
+VGA High/True Color screenshots inspected. Tests create isolated profile/INI
+fixtures and never read real PWL data.
+
+- [ ] Verify actual native Edit placement and removal of the extra strip on Win95.
+- [ ] Verify the real user's Daniel spelling and unwanted-card removal after login.
+- [ ] Verify Cyrillic source names on real ACP1251 Win95; do not infer success from
+      an English Wine locale. Diagnostics now include resolution, depth and ACP only.

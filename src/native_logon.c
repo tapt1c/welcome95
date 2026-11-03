@@ -33,6 +33,7 @@ static void diagnose(const char *reason)
     static BOOL started;
     char path[MAX_PATH], line[256], class_name[32];
     HANDLE file;
+    HDC display;
     DWORD length, written;
     int index, end;
     if (last_reason == reason) return;
@@ -49,6 +50,15 @@ static void diagnose(const char *reason)
     wsprintfA(line, "%lu: %s; controls=%d edits=%d passwords=%d\r\n",
         GetTickCount(), reason, saved.count, saved.edits, saved.passwords);
     WriteFile(file, line, (DWORD)lstrlenA(line), &written, NULL);
+    display=GetDC(NULL);
+    if(display) {
+        wsprintfA(line,"  display=%dx%d bits=%d palette=%d ACP=%u\r\n",
+            GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
+            GetDeviceCaps(display,BITSPIXEL)*GetDeviceCaps(display,PLANES),
+            (GetDeviceCaps(display,RASTERCAPS)&RC_PALETTE)!=0,GetACP());
+        WriteFile(file,line,(DWORD)lstrlenA(line),&written,NULL);
+        ReleaseDC(NULL,display);
+    }
     for (index = 0; index < saved.count; ++index) {
         HWND child = saved.children[index].window;
         class_name[0] = '\0'; GetClassNameA(child, class_name, sizeof(class_name));
@@ -191,7 +201,7 @@ BOOL native_logon_layout(int x, int y, int width)
         HWND child = saved.children[index].window;
         if (child != saved.password) ShowWindow(child, SW_HIDE);
     }
-    if (!SetWindowPos(saved.dialog, HWND_TOPMOST, x, y, width, 30,
+    if (!SetWindowPos(saved.dialog, HWND_TOPMOST, x, y, width, height,
                       SWP_FRAMECHANGED | SWP_NOACTIVATE)) return FALSE;
     if (!SetWindowPos(saved.password, NULL, 0, 0, width - gap, height,
                       SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)) return FALSE;
@@ -283,7 +293,7 @@ BOOL native_logon_attach(HWND dialog, int x, int y, int width)
         if (GetWindowLongA(child, GWL_ID) == IDCANCEL) EnableWindow(child, FALSE);
     }
     set_style(saved.password, GWL_STYLE, GetWindowLongA(saved.password, GWL_STYLE) & ~WS_BORDER);
-    set_style(saved.password, GWL_EXSTYLE, GetWindowLongA(saved.password, GWL_EXSTYLE) & ~WS_EX_CLIENTEDGE);
+    set_style(saved.password, GWL_EXSTYLE, GetWindowLongA(saved.password, GWL_EXSTYLE) & ~(WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME));
     if (!native_logon_layout(x, y, width)) {
         diagnose("cannot place password field"); native_logon_restore(TRUE); return FALSE;
     }

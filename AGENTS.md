@@ -12,7 +12,9 @@ The deliberately requested backlog filename is `BAKCLOG.md`.
 
 Windows must keep ownership of its native password Edit and authenticate input.
 Never read, log, copy or persist a real password. Do not open/decrypt PWL files.
-Read only account names from ProfileList and SYSTEM.INI [Password Lists]. Clear
+Read account names from ProfileList and SYSTEM.INI [Password Lists]; ProfileImagePath
+may be queried only for canonical directory-name spelling, never logged or read
+for profile contents. Clear
 old input before changing the native username. Do not replace authentication
 with a successful click, cached-password comparison or synthetic success signal.
 
@@ -78,3 +80,15 @@ Use the supplied TTF resources via src/fonts.c. Do not install fonts permanently
 overwrite user files, or introduce NT-only private-font APIs. Unique temporary
 files belong to the process; unregister only resources it loaded. Keep metadata
 and ownership notices intact. Use the user-supplied XP font versions documented in assets/fonts/README.md.
+
+## Names and VGA rendering
+
+Windows usernames are case-insensitive; do not invent case-sensitive identities.
+The native Edit spelling outranks PWL casing for display. Known profile names
+outrank unrelated cache aliases. Never guess a universal OEM/ANSI conversion.
+Use DEFAULT_CHARSET and scale font heights with the same layout reference.
+Use the supported COLORONCOLOR mode for bitmap shrinking; check actual GDI pixels.
+Run VGA checks with WELCOME95_TEST_SCREEN=640x480x16 and the default 800x600x24.
+
+For manual updates, stop the old observer with Disable and close its settings
+before replacing the EXE; then Enable the new copy and restart Windows.

@@ -27,7 +27,7 @@ void test_entry(void)
     DWORD template_words[32];
     DLGTEMPLATE *template;
     HWND dialog, password, username, submit, cancel, hidden, extra, dormant[9];
-    RECT original, rectangle, password_rectangle;
+    RECT original, rectangle, password_rectangle, live_password_rectangle;
     HRGN region;
     LONG style;
     int index;
@@ -85,12 +85,16 @@ void test_entry(void)
     check(!(GetWindowLongA(dialog, GWL_STYLE) & WS_CAPTION), "native title bar is removed");
     region = CreateRectRgn(0, 0, 0, 0);
     check(GetWindowRgn(dialog, region) != ERROR, "native dialog has an explicit clipping region");
-    check(PtInRegion(region, 10, 10) && !PtInRegion(region, 250, 10) && !PtInRegion(region, 204, 10),
+    check(PtInRegion(region, 10, 10) && !PtInRegion(region, 250, 10) && !PtInRegion(region, 260-MulDiv(60,GetSystemMetrics(SM_CXSCREEN),800)+2, 10),
           "only the actual password field is exposed; all native dialog chrome is clipped");
     check(native_logon_layout(320, 280, 280), "relayout after screen geometry changes");
     GetWindowRect(dialog, &rectangle);
     check(rectangle.left == 320 && rectangle.top == 280 && rectangle.right - rectangle.left == 280,
           "native controls follow requested welcome coordinates");
+    GetWindowRect(password,&live_password_rectangle);
+    check(rectangle.bottom-rectangle.top==live_password_rectangle.bottom-live_password_rectangle.top,
+        "native container has no extra strip below the password field");
+
     check(native_logon_set_user("Alex"), "select another account through the native username field");
     GetWindowTextA(username, text, sizeof(text));
     check(!lstrcmpA(text, "Alex"), "Windows receives the selected account name");

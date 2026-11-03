@@ -41,6 +41,7 @@ void topmost_test_entry(void)
         10, 10, 200, 100, NULL, NULL, current, NULL);
     login_window = CreateWindowExA(WS_EX_TOPMOST, "STATIC", "Synthetic native controls", WS_POPUP | WS_VISIBLE,
         300, 250, 200, 30, NULL, NULL, current, NULL);
+    test_check(font_pixels(14)<=sy(20) && font_pixels(9)<=sy(13), "font heights fit the scaled account and footer cells");
     test_check(canvas && competitor && login_window, "create competing desktop windows");
     if (!canvas || !competitor || !login_window) { CloseHandle(test_output); ExitProcess(1); }
     maintain_topmost(canvas);
