@@ -1,3 +1,4 @@
+#include "ui_text.h"
 /* Win95 loads this ASCII 8.3 image without arguments from SYSTEM.INI.
    The full ANSI owner path is passed only to Win32 CreateProcessA. */
 #include "bootstrap.h"
@@ -30,7 +31,7 @@ DWORD bootstrap_forward(HKEY root,const char *key,const char *mode)
     if(type!=REG_SZ || !size || size>=sizeof(owner) || owner[size-1] || !owner[0]) return ERROR_INVALID_DATA;
     cls.hInstance=GetModuleHandleA(NULL); cls.lpfnWndProc=boot_proc; cls.lpszClassName="Welcome95.Bootstrap";
     if(!RegisterClassA(&cls) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS) return GetLastError();
-    window=CreateWindowA(cls.lpszClassName,"Welcome95 bootstrap",WS_OVERLAPPED,0,0,0,0,NULL,NULL,cls.hInstance,NULL);
+    window=CreateWindowA(cls.lpszClassName,ui_text("\307\340\343\360\363\347\367\350\352 Welcome95","Welcome95 bootstrap"),WS_OVERLAPPED,0,0,0,0,NULL,NULL,cls.hInstance,NULL);
     if(!window) return GetLastError();
     startup.cb=sizeof(startup); wsprintfA(command,"\"%s\" %s",owner,mode);
     if(!CreateProcessA(owner,command,NULL,NULL,FALSE,0,NULL,NULL,&startup,&child)) {
@@ -67,7 +68,7 @@ void boot_entry(void)
     if(error && error!=ERROR_CANCELLED) {
         stop=OpenEventA(EVENT_MODIFY_STATE,FALSE,"Welcome95.Stop");
         if(stop) { SetEvent(stop); CloseHandle(stop); }
-        wsprintfA(message,"Welcome95 bootstrap could not start (error %lu).\r\nUse the main Welcome95 settings to Disable or restore the saved SYSTEM.INI shell.",error);
+        wsprintfA(message,ui_text("\315\345 \363\344\340\353\356\361\374 \347\340\357\363\361\362\350\362\374 \347\340\343\360\363\347\367\350\352 Welcome95 (\356\370\350\341\352\340 %lu).\r\n\315\340\346\354\350\362\345 \253\316\362\352\353\376\367\350\362\374\273 \342 \355\340\361\362\360\356\351\352\340\365 Welcome95 \350\353\350 \342\356\361\361\362\340\355\356\342\350\362\345 \361\356\365\360\340\355\270\355\355\373\351 \357\340\360\340\354\345\362\360 shell \342 SYSTEM.INI.","Welcome95 bootstrap could not start (error %lu).\r\nUse the main Welcome95 settings to Disable or restore the saved SYSTEM.INI shell."),error);
         MessageBoxA(NULL,message,"Welcome95",MB_OK|MB_ICONERROR|MB_TOPMOST);
     }
     ExitProcess(error);

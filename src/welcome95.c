@@ -1,3 +1,4 @@
+#include "ui_text.h"
 /* Welcome95: ANSI Win32 only, no Unicode/NT-only APIs. */
 #include <windows.h>
 #include "native_logon.h"
@@ -169,15 +170,15 @@ static BOOL configure(HWND owner,BOOL enable)
     HANDLE event;
     char message[240];
     if(enable && !(GetVersion()&0x80000000UL)) {
-        error_box(owner,"Automatic startup is intended for Windows 95/98/Me. Preview is available on other systems."); return FALSE;
+        error_box(owner,ui_text("\300\342\362\356\347\340\357\363\361\352 \344\356\361\362\363\357\345\355 \362\356\353\374\352\356 \342 Windows 95/98/Me. \302 \344\360\363\343\350\365 \361\350\361\362\345\354\340\365 \344\356\361\362\363\357\345\355 \357\360\356\361\354\356\362\360.","Automatic startup is intended for Windows 95/98/Me. Preview is available on other systems.")); return FALSE;
     }
-    if(!system_ini[0]) { error_box(owner,"Cannot locate SYSTEM.INI. No startup changes made."); return FALSE; }
+    if(!system_ini[0]) { error_box(owner,ui_text("\315\345 \355\340\351\344\345\355 SYSTEM.INI. \315\340\361\362\360\356\351\352\350 \340\342\362\356\347\340\357\363\361\352\340 \355\345 \350\347\354\345\355\345\355\373.","Cannot locate SYSTEM.INI. No startup changes made.")); return FALSE; }
     if(enable && (!startup_config.boot_directory || !startup_config.boot_image || !startup_config.boot_size)) {
-        error_box(owner,"Cannot load the Windows 95 bootstrap. No startup changes made."); return FALSE;
+        error_box(owner,ui_text("\315\345 \363\344\340\353\356\361\374 \347\340\343\360\363\347\350\362\374 \354\356\344\363\353\374 \347\340\357\363\361\352\340 Windows 95. \315\340\361\362\360\356\351\352\350 \340\342\362\356\347\340\357\363\361\352\340 \355\345 \350\347\354\345\355\345\355\373.","Cannot load the Windows 95 bootstrap. No startup changes made.")); return FALSE;
     }
     error=startup_configure(&startup_config,enable);
     if(error) {
-        wsprintfA(message,"Cannot update Welcome95 startup (error %lu).\r\nThe previous shell backup is retained. Check ownership and SYSTEM.INI before retrying.",error);
+        wsprintfA(message,ui_text("\315\345 \363\344\340\353\356\361\374 \350\347\354\345\355\350\362\374 \340\342\362\356\347\340\357\363\361\352 Welcome95 (\356\370\350\341\352\340 %lu).\r\n\320\345\347\345\360\342\355\340\377 \352\356\357\350\377 \357\360\345\346\355\345\351 \356\341\356\353\356\367\352\350 \361\356\365\360\340\355\345\355\340. \317\360\356\342\345\360\374\362\345 \363\361\362\340\355\356\342\352\363 \350 SYSTEM.INI \357\345\360\345\344 \357\356\342\362\356\360\355\356\351 \357\356\357\373\362\352\356\351.","Cannot update Welcome95 startup (error %lu).\r\nThe previous shell backup is retained. Check ownership and SYSTEM.INI before retrying."),error);
         error_box(owner,message); return FALSE;
     }
     if(!enable) {
@@ -348,7 +349,7 @@ static void create_ui_fonts(void)
 }
 static BOOL russian_ui(void)
 {
-    return GetACP() == 1251 && PRIMARYLANGID(GetSystemDefaultLangID()) == LANG_RUSSIAN;
+    return ui_russian();
 }
 static const char *welcome_text(void)
 {
@@ -424,7 +425,7 @@ static void perform_power(PowerAction action,BOOL dos)
         power_requested=FALSE;
         if(IsWindow(owner)) { set_status_view(owner,VIEW_LOGIN); login_hotkeys(owner,TRUE); }
         if(error && error!=ERROR_CANCELLED) {
-            wsprintfA(text,"Windows could not perform the selected power action.\r\nError: %lu",error);
+            wsprintfA(text,ui_text("Windows \355\345 \363\344\340\353\356\361\374 \342\373\357\356\353\355\350\362\374 \342\373\341\360\340\355\355\356\345 \344\345\351\361\362\342\350\345.\r\n\316\370\350\341\352\340: %lu","Windows could not perform the selected power action.\r\nError: %lu"),error);
             error_box(owner,text);
         }
         if(native_logon_attached()) native_logon_focus();
@@ -440,7 +441,7 @@ static void show_power_dialog(HWND owner)
     host.standby_available=preview || menu_power->standby_available;
     host.dos_available=preview || menu_power->dos_available;
     host.perform=perform_power; host.restore_focus=native_logon_focus;
-    if(!power_dialog_show(&host)) error_box(owner,"Cannot open the shutdown dialog.");
+    if(!power_dialog_show(&host)) error_box(owner,ui_text("\315\345 \363\344\340\353\356\361\374 \356\362\352\360\373\362\374 \356\352\355\356 \342\373\352\353\376\367\345\355\350\377 \352\356\354\357\374\376\362\345\360\340.","Cannot open the shutdown dialog."));
 }
 
 static void paint_welcome(HWND hwnd)
@@ -495,7 +496,7 @@ static void paint_welcome(HWND hwnd)
     paint_logo_at(dc,compact_layout() ? compact_x(356) : cx(243),compact_layout() ? compact_y(84) : cy(232));
     if(compact_layout()) SetRect(&rectangle,compact_x(150),compact_y(188),compact_x(467),compact_y(214));
     else SetRect(&rectangle,cx(40),cy(338),cx(355),cy(389));
-    label(dc, body_font, finishing ? "Starting your session..." : (account_open() ? "To begin, enter your password" : "To begin, click your user name"), rectangle, DT_RIGHT | DT_WORDBREAK);
+    label(dc, body_font, finishing ? ui_text("\302\365\356\344 \342 \361\350\361\362\345\354\363...","Starting your session...") : (account_open() ? ui_text("\304\353\377 \342\365\356\344\340 \342\342\345\344\350\362\345 \357\340\360\356\353\374","To begin, enter your password") : ui_text("\304\353\377 \342\365\356\344\340 \342\373\341\345\360\350\362\345 \361\342\356\270 \350\354\377","To begin, click your user name")), rectangle, DT_RIGHT | DT_WORDBREAK);
     for (index = page_first(); index < page_first() + visible_profiles(); ++index) {
         top = profile_top(index);
         if (index == selected_profile && account_open()) bitmap(dc, 112, card_x(425), row_y(top), 350, 72);
@@ -507,13 +508,13 @@ static void paint_welcome(HWND hwnd)
             profiles_name(index), rectangle, DT_LEFT | DT_SINGLELINE);
         if (index == selected_profile && account_open()) {
             SetRect(&rectangle, card_x(499), row_y(top+35), card_x(765), row_y(top+50));
-            label(dc, small_font, preview ? "Preview" : (pending_profile ? "Switching user..." : (native_logon_attached() ? "Type your password." : "Preparing sign-in...")), rectangle, DT_LEFT | DT_SINGLELINE);
+            label(dc, small_font, preview ? ui_text("\317\360\356\361\354\356\362\360","Preview") : (pending_profile ? ui_text("\321\354\345\355\340 \357\356\353\374\347\356\342\340\362\345\353\377...","Switching user...") : (native_logon_attached() ? ui_text("\302\342\345\344\350\362\345 \357\340\360\356\353\374.","Type your password.") : ui_text("\317\356\344\343\356\362\356\342\352\340 \342\365\356\344\340...","Preparing sign-in..."))), rectangle, DT_LEFT | DT_SINGLELINE);
             SetRect(&rectangle, card_x(499), row_y(top+50), card_x(670), row_y(top+76));
             rounded(dc, rectangle, RGB(255,255,255), RGB(49,81,181));
         }
     }
     SetRect(&rectangle, rx(470), by(527), rx(775), by(570));
-    label(dc, small_font, "After you log on, you can change your settings.\nOpen Welcome95 to customize this screen.", rectangle, DT_LEFT | DT_WORDBREAK);
+    label(dc, small_font, ui_text("\317\356\361\353\345 \342\365\356\344\340 \354\356\346\355\356 \350\347\354\345\355\350\362\374 \355\340\361\362\360\356\351\352\350.\n\316\362\352\360\356\351\362\345 Welcome95 \344\353\377 \355\340\361\362\360\356\351\352\350 \375\352\360\340\355\340.","After you log on, you can change your settings.\nOpen Welcome95 to customize this screen."), rectangle, DT_LEFT | DT_WORDBREAK);
     finish_paint(hwnd,&paint,dc,frame,old);
 }
 
@@ -535,7 +536,7 @@ static void draw_button(DRAWITEMSTRUCT *item)
         }
         bitmap(dc, 107, rectangle.left, rectangle.top, 26, 26);
         rectangle.left += 34;
-        label(dc, body_font, "Turn off computer", rectangle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        label(dc, body_font, ui_text("\302\373\352\353\376\367\350\362\374 \352\356\354\357\374\376\362\345\360","Turn off computer"), rectangle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
     if(state) RestoreDC(dc,state);
 }
@@ -725,13 +726,13 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if (preview_status) preview_started = GetTickCount();
         SetTimer(hwnd, TICK, 100, NULL);
         if(status_view==VIEW_LOGIN) login_hotkeys(hwnd,TRUE);
-        CreateWindowA("BUTTON", "Trouble signing in?", WS_CHILD | BS_PUSHBUTTON,
+        CreateWindowA("BUTTON", ui_text("\315\345 \363\344\340\270\362\361\377 \342\356\351\362\350?","Trouble signing in?"), WS_CHILD | BS_PUSHBUTTON,
             rx(625), by(572), 150, 23, hwnd, (HMENU)ID_NATIVE, instance, NULL);
         SendDlgItemMessageA(hwnd, ID_NATIVE, WM_SETFONT, (WPARAM)small_font, TRUE);
-        CreateWindowA("BUTTON", "Sign in", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        CreateWindowA("BUTTON", ui_text("\302\356\351\362\350","Sign in"), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             card_x(685), row_y(profile_top(selected_profile)+51), 26, 26, hwnd, (HMENU)ID_SUBMIT, instance, NULL);
         EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), preview);
-        CreateWindowA("BUTTON", "Turn off computer", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        CreateWindowA("BUTTON", ui_text("\302\373\352\353\376\367\350\362\374 \352\356\354\357\374\376\362\345\360","Turn off computer"), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             25, by(526), 245, 29, hwnd, (HMENU)ID_POWER, instance, NULL);
         CreateWindowA("BUTTON", "<", WS_CHILD | (profiles_count()>4 ? WS_VISIBLE : 0), cx(720), cy(455), 25, 24, hwnd, (HMENU)ID_PREV, instance, NULL);
         CreateWindowA("BUTTON", ">", WS_CHILD | (profiles_count()>4 ? WS_VISIBLE : 0), cx(750), cy(455), 25, 24, hwnd, (HMENU)ID_NEXT, instance, NULL);
@@ -745,7 +746,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
                 x, y, width - 60, 22, hwnd, (HMENU)201, instance, NULL);
             /* A disabled preview edit never accepts a real password. */
             {
-            HWND button = CreateWindowA("BUTTON", "Finish preview", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            HWND button = CreateWindowA("BUTTON", ui_text("\307\340\352\360\373\362\374 \357\360\356\361\354\356\362\360","Finish preview"), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                 rx(625), by(572), 150, 23, hwnd, (HMENU)ID_DONE, instance, NULL);
             SendMessageA(button, WM_SETFONT, (WPARAM)small_font, TRUE);
             }
@@ -1056,7 +1057,7 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
 
 static void update_settings(HWND hwnd)
 {
-    SetDlgItemTextA(hwnd, 200, enabled() ? "Status: enabled for the next Windows start" : "Status: disabled for this executable");
+    SetDlgItemTextA(hwnd, 200, enabled() ? ui_text("\321\356\361\362\356\377\355\350\345: \342\352\353\376\367\345\355\356 \361\356 \361\353\345\344\363\376\371\345\343\356 \347\340\357\363\361\352\340 Windows","Status: enabled for the next Windows start") : ui_text("\321\356\361\362\356\377\355\350\345: \356\362\352\353\376\367\345\355\356 \344\353\377 \375\362\356\351 \352\356\357\350\350 \357\360\356\343\360\340\354\354\373","Status: disabled for this executable"));
 }
 
 static void button(HWND hwnd, const char *text, int id, int x, int y, int width)
@@ -1074,24 +1075,24 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
     char command[MAX_PATH + 40];
     switch (message) {
     case WM_CREATE:
-        child = CreateWindowA("STATIC", "Welcome95\r\nWindows XP-inspired welcome for Windows 95.\r\n\r\nEnable delays your saved shell until welcome closes.\r\nDisable restores your previous shell.\r\nWindows keeps its own password verification.\r\nKeep this EXE in a permanent local folder.",
+        child = CreateWindowA("STATIC", ui_text("Welcome95\r\n\335\352\360\340\355 \357\360\350\342\345\362\361\362\342\350\377 \342 \361\362\350\353\345 Windows XP \344\353\377 Windows 95.\r\n\r\n\253\302\352\353\376\367\350\362\374\273 \227 \347\340\357\363\361\352 \356\341\356\353\356\367\352\350 \357\356\361\353\345 \357\360\350\342\345\362\361\362\342\350\377.\r\n\253\316\362\352\353\376\367\350\362\374\273 \227 \342\356\361\361\362\340\355\356\342\353\345\355\350\345 \357\360\345\346\355\345\351 \356\341\356\353\356\367\352\350.\r\n\317\340\360\356\353\374 \357\360\356\342\345\360\377\345\362\361\377 \361\360\345\344\361\362\342\340\354\350 Windows.\r\n\325\360\340\355\350\362\345 EXE \342 \357\356\361\362\356\377\355\355\356\351 \353\356\352\340\353\374\355\356\351 \357\340\357\352\345.","Welcome95\r\nWindows XP-inspired welcome for Windows 95.\r\n\r\nEnable delays your saved shell until welcome closes.\r\nDisable restores your previous shell.\r\nWindows keeps its own password verification.\r\nKeep this EXE in a permanent local folder."),
             WS_CHILD | WS_VISIBLE, 20, 20, 460, 115, hwnd, NULL, instance, NULL);
         SendMessageA(child, WM_SETFONT, (WPARAM)small_font, TRUE);
         child = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE, 20, 145, 460, 25,
                               hwnd, (HMENU)200, instance, NULL);
         SendMessageA(child, WM_SETFONT, (WPARAM)small_font, TRUE);
-        button(hwnd, "Enable", ID_ENABLE, 20, 185, 100);
-        button(hwnd, "Disable", ID_DISABLE, 130, 185, 100);
-        button(hwnd, "Preview", ID_PREVIEW, 240, 185, 100);
-        button(hwnd, "Close", ID_EXIT, 350, 185, 100);
-        button(hwnd, "Welcome (one)", ID_PREVIEW_SINGLE, 20, 225, 140);
-        button(hwnd, "Welcome (many)", ID_PREVIEW_MULTI, 170, 225, 140);
-        button(hwnd, "Shutdown preview", ID_PREVIEW_SHUTDOWN, 320, 225, 140);
+        button(hwnd, ui_text("\302\352\353\376\367\350\362\374","Enable"), ID_ENABLE, 20, 185, 100);
+        button(hwnd, ui_text("\316\362\352\353\376\367\350\362\374","Disable"), ID_DISABLE, 130, 185, 100);
+        button(hwnd, ui_text("\317\360\356\361\354\356\362\360","Preview"), ID_PREVIEW, 240, 185, 100);
+        button(hwnd, ui_text("\307\340\352\360\373\362\374","Close"), ID_EXIT, 350, 185, 100);
+        button(hwnd, ui_text("\317\360\350\342\345\362\361\362\342\350\345 (1)","Welcome (one)"), ID_PREVIEW_SINGLE, 20, 225, 140);
+        button(hwnd, ui_text("\317\360\350\342\345\362\361\362\342\350\345 (2+)","Welcome (many)"), ID_PREVIEW_MULTI, 170, 225, 140);
+        button(hwnd, ui_text("\302\373\352\353\376\367\345\355\350\345","Shutdown preview"), ID_PREVIEW_SHUTDOWN, 320, 225, 140);
         update_settings(hwnd); return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case ID_ENABLE:
-            if (configure(hwnd, TRUE)) MessageBoxA(hwnd, "Enabled. The previous shell has been backed up.\r\nRestart Windows to test startup.\r\nKeep this executable at its current path.", APP, MB_OK | MB_ICONINFORMATION);
+            if (configure(hwnd, TRUE)) MessageBoxA(hwnd, ui_text("\302\352\353\376\367\345\355\356. \321\356\347\344\340\355\340 \360\345\347\345\360\342\355\340\377 \352\356\357\350\377 \357\360\345\346\355\345\351 \356\341\356\353\356\367\352\350.\r\n\317\345\360\345\347\340\343\360\363\347\350\362\345 Windows \344\353\377 \357\360\356\342\345\360\352\350 \340\342\362\356\347\340\357\363\361\352\340.\r\n\315\345 \357\345\360\345\354\345\371\340\351\362\345 \363\361\362\340\355\356\342\353\345\355\355\373\351 EXE.","Enabled. The previous shell has been backed up.\r\nRestart Windows to test startup.\r\nKeep this executable at its current path."), APP, MB_OK | MB_ICONINFORMATION);
             update_settings(hwnd); break;
         case ID_DISABLE: configure(hwnd, FALSE); update_settings(hwnd); break;
         case ID_PREVIEW_SINGLE:
@@ -1104,7 +1105,7 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
                 LOWORD(wp) == ID_PREVIEW_MULTI ? "/preview-multi" :
                 LOWORD(wp) == ID_PREVIEW_SHUTDOWN ? "/preview-shutdown" : "/preview");
             if (!CreateProcessA(exe_path, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process))
-                error_box(hwnd, "Cannot start preview.");
+                error_box(hwnd, ui_text("\315\345 \363\344\340\353\356\361\374 \347\340\357\363\361\362\350\362\374 \357\360\356\361\354\356\362\360.","Cannot start preview."));
             else { CloseHandle(process.hThread); CloseHandle(process.hProcess); }
             break;
         case ID_EXIT: DestroyWindow(hwnd); break;
@@ -1145,7 +1146,7 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
         if(error) {
             HANDLE event=OpenEventA(EVENT_MODIFY_STATE,FALSE,STOP_EVENT);
             if(event) { SetEvent(event); CloseHandle(event); }
-            MessageBoxA(NULL,"Welcome95 cannot start the saved shell. Restore SYSTEM.INI [boot] shell from the Welcome95 backup or use Disable.",APP,MB_OK|MB_ICONERROR|MB_TOPMOST);
+            MessageBoxA(NULL,ui_text("Welcome95 \355\345 \363\344\340\353\356\361\374 \347\340\357\363\361\362\350\362\374 \361\356\365\360\340\355\270\355\355\363\376 \356\341\356\353\356\367\352\363. \302\356\361\361\362\340\355\356\342\350\362\345 \357\340\360\340\354\345\362\360 shell \342 \360\340\347\344\345\353\345 [boot] \364\340\351\353\340 SYSTEM.INI \350\347 \360\345\347\345\360\342\355\356\351 \352\356\357\350\350 Welcome95 \350\353\350 \355\340\346\354\350\362\345 \253\316\362\352\353\376\367\350\362\374\273.","Welcome95 cannot start the saved shell. Restore SYSTEM.INI [boot] shell from the Welcome95 backup or use Disable."),APP,MB_OK|MB_ICONERROR|MB_TOPMOST);
         }
         return error ? 1 : 0;
     }
@@ -1171,11 +1172,11 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
     preview_started = GetTickCount();
     welcome = !lstrcmpiA(arguments, "/welcome");
     if (*arguments && !preview && !welcome && !session_monitor) {
-        error_box(NULL, "Unknown option. Run without arguments for settings."); return 1;
+        error_box(NULL, ui_text("\315\345\350\347\342\345\361\362\355\373\351 \357\340\360\340\354\345\362\360. \307\340\357\363\361\362\350\362\345 \357\360\356\343\360\340\354\354\363 \341\345\347 \357\340\360\340\354\345\362\360\356\342 \344\353\377 \356\362\352\360\373\362\350\377 \355\340\361\362\360\356\345\352.","Unknown option. Run without arguments for settings.")); return 1;
     }
     version = GetVersion();
     if (welcome && (!(version & 0x80000000UL) || LOBYTE(LOWORD(version)) != 4)) {
-        error_box(NULL, "Automatic welcome mode supports Windows 95/98/Me only. Use Preview to inspect the screen."); return 1;
+        error_box(NULL, ui_text("\300\342\362\356\347\340\357\363\361\352 \375\352\360\340\355\340 \357\360\350\342\345\362\361\362\342\350\377 \344\356\361\362\363\357\345\355 \362\356\353\374\352\356 \342 Windows 95/98/Me. \304\353\377 \357\360\356\361\354\356\362\360\340 \355\340\346\354\350\362\345 \253\317\360\356\361\354\356\362\360\273.","Automatic welcome mode supports Windows 95/98/Me only. Use Preview to inspect the screen.")); return 1;
     }
     if (welcome || preview) {
         running_event = CreateEventA(NULL, TRUE, FALSE, preview ? "Welcome95.Preview" : INSTANCE_EVENT);
@@ -1226,7 +1227,7 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
             NULL, NULL, instance, NULL);
         screen = window;
     } else {
-        window = CreateWindowA(cls.lpszClassName, "Welcome95 settings", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        window = CreateWindowA(cls.lpszClassName, ui_text("\315\340\361\362\360\356\351\352\350 Welcome95","Welcome95 settings"), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
             CW_USEDEFAULT, CW_USEDEFAULT, 500, 315, NULL, NULL, instance, NULL);
         ShowWindow(window, SW_SHOW);
     }

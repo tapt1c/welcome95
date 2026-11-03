@@ -23,7 +23,7 @@ build/native_logon_test.exe: tests/native_logon_test.c src/native_logon.c src/na
 	$(CC) $(CFLAGS) tests/native_logon_test.c src/native_logon.c -o $@ $(LDFLAGS) -Wl,--entry,_test_entry -luser32 -lgdi32 -lkernel32
 
 # 64-bit test executables run under Wine64; production remains a Win95 x86 EXE.
-test-helper64: build/native_logon_test64.exe build/topmost_test64.exe build/fonts_test64.exe build/profiles_test64.exe build/render_test64.exe build/power_test64.exe build/dos_test64.exe build/layout_test64.exe build/startup_test64.exe build/session_test64.exe
+test-helper64: build/ui_test64.exe build/native_logon_test64.exe build/topmost_test64.exe build/fonts_test64.exe build/profiles_test64.exe build/render_test64.exe build/power_test64.exe build/dos_test64.exe build/layout_test64.exe build/startup_test64.exe build/session_test64.exe
 
 build/native_logon_test64.exe: tests/native_logon_test.c src/native_logon.c src/native_logon.h Makefile
 	mkdir -p build
@@ -76,3 +76,9 @@ build/session_test64.exe: src/bootstrap.c src/bootstrap.h tests/session_test.c s
 
 build/w95boot.exe: src/bootstrap.c src/bootstrap.h src/startup.c src/startup.h Makefile
 	$(CC) $(CFLAGS) src/bootstrap.c src/startup.c -o $@ $(LDFLAGS) -Wl,--entry,_boot_entry -luser32 -ladvapi32 -lkernel32
+
+# Keep every consumer of ANSI UI text current, including the embedded bootstrap.
+build/welcome95.exe build/w95boot.exe build/native_logon_test.exe build/native_logon_test64.exe build/topmost_test64.exe build/preview64.exe build/profiles_test64.exe build/render_test64.exe build/power_test64.exe build/layout_test64.exe build/session_test64.exe: src/ui_text.h
+
+build/ui_test64.exe: tests/ui_test.c src/welcome95.c $(POWER_SOURCES) $(wildcard src/*.h) build/assets64.o Makefile
+	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) -DWELCOME95_TEST_RUSSIAN=1 tests/ui_test.c $(POWER_SOURCES) build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,ui_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32

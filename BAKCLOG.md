@@ -341,3 +341,33 @@ the logged Win95 geometry; actual Win95 login still needs a repeat on the VM.
 
 - [ ] Confirm caret, visible stars, correct-password success and wrong-password retry
       on the user's actual network and Windows logon dialogs.
+
+
+## Larger password masks and complete Russian UI (current)
+
+The user confirms the Win95 geometry fix works and supplies a screenshot of real
+masked input. Requested slightly larger stars without resizing the field, then
+complete Russian localization.
+
+WM_SETFONT(NULL) selects the provider's own larger default system font, without
+passing a process-private HFONT. Original WM_GETFONT metadata is restored on
+fallback/cleanup. No font object is created or deleted across process boundaries;
+client dimensions remain 167x22. Existing input, native styles and IDs are intact.
+
+Russian CP1251 UI now covers login prompts/footer/buttons, settings/actions and
+statuses, previews, errors, generic display names and bootstrap errors. A shared
+ANSI-language helper keeps Cyrillic out of non-1251 interfaces. Account names,
+startup values, command switches and diagnostic identifiers are unchanged.
+The Russian UI test forces language only in the test build, round-trips actual
+control captions and measures CP1251 glyph widths using test-only wide APIs.
+
+Validation: 387 checks per resolution in the three standard Wine modes: 50 native,
+45 session and 14 Russian UI checks among the existing suites. Tests cover font
+restoration, provider-side text height, real typing/mask pixels, unchanged field
+geometry and Russian text fitting the original settings, compact login and power
+controls. Russian power labels use 10px Tahoma Bold to fit their 88px columns
+(the previous 11px standby label needed 90px). Production keeps x86/PE4.0/no CRT;
+main/boot imports are audited.
+
+- [ ] Visually confirm the larger default-font stars and full Russian captions on
+      the user's Win95; font rasterization and high-DPI variants remain target checks.

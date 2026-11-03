@@ -196,3 +196,13 @@ native client anchor, and verify containment in the parent's client rectangle.
 Test a legacy WM_NCCALCSIZE fixture that retains (3,22), both reported control
 inventories (14 controls / Edit 23 and 8 controls / Edit 31), real system mouse
 and keyboard events, and visible synthetic mask pixels. Focus alone is inadequate.
+
+
+Use src/ui_text.h for CP1251 Russian/English UI selection. Keep account identity,
+registry values, CLI switches and metadata identifiers independent of UI language.
+WELCOME95_TEST_RUSSIAN is a test-build flag only. Measure translated button text
+as single-line text; long explanatory panels may wrap.
+
+For larger native password glyphs, WM_SETFONT(NULL) selects the provider's own
+system font. Preserve/restore its original WM_GETFONT value; do not pass a custom
+font owned by another process or resize the 167x22 client for a font change.

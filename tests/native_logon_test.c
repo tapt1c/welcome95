@@ -52,6 +52,8 @@ void test_entry(void)
     RECT original, rectangle, password_rectangle, live_password_rectangle;
     HRGN region, shape, expected_shape;
     LONG style;
+    HFONT original_font, applied_font;
+    LOGFONTA font_info;
     int index;
     char text[64];
     HINSTANCE instance = GetModuleHandleA(NULL);
@@ -74,6 +76,9 @@ void test_entry(void)
         20, 20, 150, 24, dialog, (HMENU)21, instance, NULL);
     password = CreateWindowExA(WS_EX_CLIENTEDGE,"EDIT", "synthetic-test-only", 0x500104a0UL,
         20, 55, 150, 24, dialog, (HMENU)23, instance, NULL);
+    original_font=CreateFontA(-11,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Tahoma");
+    SendMessageA(password,WM_SETFONT,(WPARAM)original_font,FALSE);
     submit = CreateWindowA("BUTTON", "OK", 0x50010000UL,
         190, 20, 70, 24, dialog, (HMENU)IDOK, instance, NULL);
     cancel = CreateWindowA("BUTTON", "Cancel", 0x50010000UL,
@@ -97,9 +102,14 @@ void test_entry(void)
     ShowWindow(dialog, SW_SHOWNA);
     GetWindowRect(dialog, &original);
     GetWindowRect(password, &password_rectangle);
+    original_font=(HFONT)SendMessageA(password,WM_GETFONT,0,0);
     style = GetWindowLongA(dialog, GWL_STYLE);
     check(native_logon_attach(dialog, 345, 250, 260), "attach the reported 14-control Win95 network logon template");
     check(native_logon_attached(), "attachment remains valid");
+    applied_font=(HFONT)SendMessageA(password,WM_GETFONT,0,0);
+    check(!applied_font && GetObjectA(GetStockObject(SYSTEM_FONT),sizeof(font_info),&font_info)==sizeof(font_info) &&
+          font_info.lfHeight>=16 && font_info.lfHeight<=22,
+          "the native password uses a larger font inside its unchanged field");
     check(GetParent(password) == dialog && GetParent(submit) == dialog,
           "password and OK keep their original native parent");
     check(!lstrcmpA(native_logon_name(), "Daniel"), "display the remembered username");
@@ -165,6 +175,8 @@ void test_entry(void)
     GetWindowTextA(password, text, sizeof(text));
     check(!text[0], "switching accounts clears the previous synthetic password");
     native_logon_restore(FALSE);
+    check((HFONT)SendMessageA(password,WM_GETFONT,0,0)==original_font,
+          "native fallback restores the provider's original password font");
     GetWindowRect(dialog, &rectangle);
     check(EqualRect(&rectangle, &original), "restore the original dialog rectangle");
     check((GetWindowLongA(dialog, GWL_STYLE) & WS_CAPTION) == (style & WS_CAPTION), "restore native chrome");
@@ -232,6 +244,7 @@ void test_entry(void)
     }
     native_logon_restore(FALSE);
     DestroyWindow(dialog);
+    DeleteObject(original_font);
     DeleteObject(region);
     CloseHandle(output);
     ExitProcess(failures ? 1 : 0);

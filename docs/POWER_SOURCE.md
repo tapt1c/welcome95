@@ -35,3 +35,9 @@ Welcome95 now explicitly invalidates/repaints its owner and child controls after
 removing the shade. This is a local rendering fix for stale owner-drawn button
 pixels; power dispatch, snapshot dimming and original enabled-state restoration
 are unchanged. Regression checks inspect the actual welcome power-button pixels.
+
+
+Russian choice labels use 10px Tahoma Bold: the supplied XP font measures
+"Ждущий режим" at 90px with the former 11px setting, beyond the fixed 88px
+column. The dialog/icon/control dimensions are unchanged. CP1251 UI tests measure
+the actual single-line label area and cover all three power choices.

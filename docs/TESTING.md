@@ -321,3 +321,23 @@ On Win95, click the actual field and type: caret and stars must appear; perform
 correct and incorrect login on both provider forms. Then repeat logoff, hidden
 rescue and power cancel. Diagnostics now record parent outer/client sizes too;
 the exposed client rectangle must fit inside both the parent client and window.
+
+
+## Larger native font and full Russian translation
+
+Current suite: 387 checks per resolution, including 50 native, 45 session and
+14 Russian UI checks. Native tests begin with an 11px fixture font, select the
+larger provider default without changing field geometry, and verify original-font
+restoration. The provider measures its selected font locally; no foreign GDI
+handle is interpreted as a local object. Real input and mask-pixel checks remain.
+
+ui_test64 uses WELCOME95_TEST_RUSSIAN only at build time. It inspects actual
+Russian settings/login/power captions and measures their CP1251 glyph widths in
+single-line buttons and wrapping text areas at all three resolutions. Wide APIs
+are confined to this Wine test; production remains ANSI Win95. Its language
+selection uses ACP1251, with the English fallback for other code pages.
+
+Repeat on Win95: larger visible masks, no field resizing, standard-dialog original
+font after Ctrl+Alt+Shift+L, complete Russian controls/errors and labels without
+clipping at 640x480. Follow the normal Disable/replace/Enable/reboot update flow
+so the newly embedded bootstrap is deployed too.

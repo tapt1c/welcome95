@@ -257,7 +257,7 @@ BOOL power_dialog_show(const PowerDialogHost *host)
     if(!shade || !choice) { power_dialog_close(); return FALSE; }
     GetClientRect(choice,&client); choice_width=client.right; choice_height=client.bottom;
     title_font=CreateFontA(-16,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Tahoma");
-    button_font=CreateFontA(-11,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Tahoma");
+    button_font=CreateFontA(host->russian ? -10 : -11,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Tahoma");
     footer_brush=CreateSolidBrush(RGB(0,45,140)); column=(choice_width-48)/3;
     for(i=0;i<3;++i) {
         HWND button=CreateWindowA("BUTTON",host->russian ? russian[i] : english[i],WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW,

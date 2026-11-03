@@ -1,3 +1,4 @@
+#include "ui_text.h"
 #include "native_logon.h"
 
 #define MAX_CONTROLS 32
@@ -12,6 +13,8 @@ typedef struct {
 
 static struct {
     HWND dialog, password, username, submit;
+    HFONT original_font;
+    BOOL font_changed;
     DWORD process;
     LONG style, exstyle;
     RECT rectangle;
@@ -185,13 +188,14 @@ BOOL native_logon_user_empty(void) { return !saved.name[0]; }
 
 const char *native_logon_name(void)
 {
-    return saved.name[0] ? saved.name : "Windows user";
+    return saved.name[0] ? saved.name : ui_text("\317\356\353\374\347\356\342\340\362\345\353\374 Windows","Windows user");
 }
 
 void native_logon_restore(BOOL reveal_original)
 {
     int index;
     BOOL visible;
+    DWORD_PTR result;
     if (saved.attached && same_dialog()) {
         visible = reveal_original ? saved.visible : IsWindowVisible(saved.dialog);
         ShowWindow(saved.dialog, SW_HIDE);
@@ -217,8 +221,12 @@ void native_logon_restore(BOOL reveal_original)
             EnableWindow(control->window, control->enabled);
             ShowWindow(control->window, control->visible ? SW_SHOWNA : SW_HIDE);
         }
+        if(saved.font_changed && IsWindow(saved.password) && GetParent(saved.password)==saved.dialog)
+            SendMessageTimeoutA(saved.password,WM_SETFONT,(WPARAM)saved.original_font,FALSE,
+                SMTO_ABORTIFHUNG,200,&result);
         ShowWindow(saved.dialog, visible ? SW_SHOWNA : SW_HIDE);
     }
+    saved.font_changed=FALSE; saved.original_font=NULL;
     if (saved.region) DeleteObject(saved.region);
     if (saved.region_probe) DeleteObject(saved.region_probe);
     saved.region = NULL;
@@ -409,6 +417,13 @@ BOOL native_logon_attach(HWND dialog, int x, int y, int width)
     }
     if (!native_logon_layout(x, y, width)) {
         diagnose("cannot place password field"); native_logon_restore(TRUE); return FALSE;
+    }
+    if(SendMessageTimeoutA(saved.password,WM_GETFONT,0,0,SMTO_ABORTIFHUNG,200,&result)) {
+        saved.original_font=(HFONT)result;
+        /* NULL asks the provider to use its own larger default system font.
+           Do not send a process-private GDI font handle across processes. */
+        saved.font_changed=TRUE;
+        SendMessageTimeoutA(saved.password,WM_SETFONT,0,FALSE,SMTO_ABORTIFHUNG,200,&result);
     }
     native_logon_repaint();
     diagnose("attached");

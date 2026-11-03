@@ -1,10 +1,11 @@
+#include "ui_text.h"
 #include <windows.h>
 #include "profiles.h"
 #define MAX_PROFILES 32
 static char names[MAX_PROFILES][128];
 static int count;
 int profiles_count(void) { return count; }
-const char *profiles_name(int index) { return index >= 0 && index < count ? names[index] : "Windows user"; }
+const char *profiles_name(int index) { return index >= 0 && index < count ? names[index] : ui_text("\317\356\353\374\347\356\342\340\362\345\353\374 Windows","Windows user"); }
 int profiles_find(const char *name)
 {
     int index;

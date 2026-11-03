@@ -108,6 +108,15 @@ static INT_PTR CALLBACK provider_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp
     if(message==WM_USER+42) {
         SetWindowLongPtrA(hwnd,DWLP_MSGRESULT,password_paints); return TRUE;
     }
+    if(message==WM_USER+43) {
+        HWND field=GetDlgItem(hwnd,23); HDC dc=GetDC(field); TEXTMETRICA metrics;
+        HFONT font=(HFONT)SendMessageA(field,WM_GETFONT,0,0);
+        HGDIOBJ old=SelectObject(dc,font ? font : GetStockObject(SYSTEM_FONT));
+        int height=GetTextMetricsA(dc,&metrics) ? metrics.tmHeight : 0;
+        if(!old) height=0;
+        SelectObject(dc,old); ReleaseDC(field,dc);
+        SetWindowLongPtrA(hwnd,DWLP_MSGRESULT,height); return TRUE;
+    }
     if(message==WM_COMMAND) return TRUE; /* Inert: a click never proves logon. */
     if(message==WM_CLOSE) { DestroyWindow(hwnd); return TRUE; }
     if(message==WM_DESTROY) PostQuitMessage(0);
@@ -321,6 +330,8 @@ void session_test_entry(void)
         "the repeated login attaches real controls owned by a separate synthetic provider process");
     {
         HWND field=GetDlgItem(provider,23); POINT hit; RECT rectangle; DWORD_PTR reply=0;
+        check(SendMessageTimeoutA(provider,WM_USER+43,0,0,SMTO_ABORTIFHUNG,200,&reply) && reply>=16 && reply<=22,
+            "the provider can render the shared larger font within the original 22px client height");
         SendMessageA(provider,WM_USER+40,0,0);
         allow_logon(); maintain_topmost(screen); pump(100);
         /* The provider can queue activation of the canvas when hiding its Edit.
