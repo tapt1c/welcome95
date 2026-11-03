@@ -91,3 +91,13 @@ were inspected. No real OS shutdown was triggered by tests.
 - [ ] Confirm temporary font cleanup on normal exits and observe forced-exit leftovers.
 - [ ] Confirm final OS-owned shutdown screen handoff; ordinary EXE coverage ends
       when Windows closes the observer. No VxD or provider replacement is included.
+
+## XP font replacement
+
+The user supplied a second set extracted from Windows XP. Replaced the earlier
+7.x font resources with Arial Regular 3.00, Arial Bold Italic 2.90 and Tahoma
+Regular/Bold 3.15. Original bytes are preserved. Selected GDI font name tables
+match the embedded Arial Bold Italic and Tahoma resources exactly under Wine64.
+Latest test total: 67 (36 native, 22 states/priority, 9 font tests). Preview images
+regenerated with the XP files. Acceptance/rasterization on real Win95 remains a
+target-system check, not established by font-table equality under Wine.

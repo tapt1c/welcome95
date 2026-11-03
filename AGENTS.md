@@ -77,4 +77,4 @@ shutdown phases as observed events. Preview states must never call ExitWindowsEx
 Use the supplied TTF resources via src/fonts.c. Do not install fonts permanently,
 overwrite user files, or introduce NT-only private-font APIs. Unique temporary
 files belong to the process; unregister only resources it loaded. Keep metadata
-and ownership notices intact. Font versions 7.x are not the original XP versions.
+and ownership notices intact. Use the user-supplied XP font versions documented in assets/fonts/README.md.
