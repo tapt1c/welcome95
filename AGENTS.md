@@ -73,11 +73,14 @@ remaining target-system uncertainty. Publish only within user-authorized scope.
 
 The lone/multiple-account welcome states follow session-ready; Windows must
 authenticate even the single-account blank-password attempt. Never bypass
-authentication or retry it automatically. /session-ready is a hidden observer
-after signalling the startup
-canvas. It must approve shutdown queries, handle cancellation, exit normally on
-committed end-session, and release its font resources. Do not claim unknown OS
-shutdown phases as observed events. Preview states must never call ExitWindowsEx.
+authentication or retry it automatically. The /welcome controller is a Win9x
+registered service; /session-ready is an ordinary per-session notifier. Keep the
+controller across logoff and reset every per-session signal/selection/attempt.
+Win9x end-session notifications without a reason must not kill the controller:
+release the canvas/fonts, then wait for a new provider or OS startup handshake.
+Known power actions can exit normally; the OS eventually stops an ambiguous-end
+service after its temporary resources have been released. Preserve cancellation.
+Preview must never register as a service, modify startup or launch a real shell.
 
 Use the supplied TTF resources via src/fonts.c. Do not install fonts permanently,
 overwrite user files, or introduce NT-only private-font APIs. Unique temporary
@@ -120,3 +123,31 @@ preserve selection and keep the native field and arrow above the footer. In a
 compact multi-account list, attach native input only after a card is opened.
 If native OK is initially disabled, consume automatic-login eligibility without
 submitting; never wait until newly typed manual input enables it.
+
+
+## Boot integration and recovery
+
+Enable owns only three Welcome95 values (RunServices, Run, RunOnce) and the
+SYSTEM.INI [boot] shell value. Save and flush the original value/presence before
+changing it, including a unique DOS-readable W95xxxx.BAK beside the executable.
+Never overwrite another install's entries, external shell changes or old backups.
+Disable restores the original shell and retains recovery metadata for cached or
+in-flight gate invocations. Every install mutation needs rollback/readback tests
+against private HKCU/INI fixtures, not actual boot configuration under Wine.
+
+The shell gate inherits the logged-on environment. It may launch the saved shell
+only after the controller's close acknowledgement; acknowledge after DestroyWindow
+returns. Beginning another canvas must not set that acknowledgement. Serialize a
+new OS session handshake with pending end-session notifications. Keep bounded waits
+and release startup on Disable/failure; do not suspend/terminate arbitrary apps.
+Never read password text or infer successful authentication from a button click.
+
+Idle z-order maintenance must cause no SetWindowPos churn. Batch necessary changes
+so the canvas never repeatedly covers/uncover the native Edit. Keep hidden windows
+out of the visible-priority comparison and preserve focus and owned OS prompts.
+Run startup_test/session_test plus existing suites; distinguish inter-process
+Wine fixtures from actual Win95 boot, service survival and startup ordering.
+
+Compare executable ownership by file path identity, including Win95 long/8.3
+aliases. GetModuleFileName may return a different path spelling in /shell than
+in Settings. A short-path gate must read the long-path backup and startup entries.

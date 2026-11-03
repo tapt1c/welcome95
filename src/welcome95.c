@@ -5,6 +5,7 @@
 #include "fonts.h"
 #include "power_dialog.h"
 #include "power_actions.h"
+#include "startup.h"
 
 #define APP "Welcome95"
 #define REG_SERVICE "Software\\Microsoft\\Windows\\CurrentVersion\\RunServices"
@@ -12,6 +13,13 @@
 #define READY_EVENT "Welcome95.SessionReady"
 #define STOP_EVENT "Welcome95.Stop"
 #define INSTANCE_EVENT "Welcome95.Running"
+#define CLOSED_EVENT "Welcome95.CanvasClosed"
+#define LOGOFF_EVENT "Welcome95.LogoffCommitted"
+#define ENDED_EVENT "Welcome95.SessionEnded"
+#define CONTROLLER_EVENT "Welcome95.ControllerReady"
+#define SHELL_STARTED (WM_USER+70)
+#define SESSION_STARTING (WM_USER+71)
+#define ENDSESSION_LOGOFF_95 0x80000000UL
 #define ID_ENABLE 101
 #define ID_DISABLE 102
 #define ID_PREVIEW 103
@@ -41,7 +49,15 @@ static DWORD preview_started, monitor_started;
 static HANDLE monitor_instance;
 static const PowerOperations *menu_power;
 static BOOL preview_power;
-static HANDLE ready_event, stop_event, running_event;
+static HANDLE ready_event, stop_event, running_event, closed_event, logoff_event, controller_event, ended_event;
+static HANDLE shell_process;
+static HWND controller;
+static BOOL resident_mode, session_running, awaiting_logon, power_requested, ending_unknown, shutdown_only_canvas;
+static DWORD provider_process;
+typedef DWORD (WINAPI *RegisterService)(DWORD,DWORD);
+static RegisterService register_service;
+static StartupConfig startup_config;
+static char system_ini[MAX_PATH];
 static BOOL preview, finishing;
 static DWORD finish_time;
 static HWND login_window;
@@ -119,114 +135,106 @@ static void error_box(HWND owner, const char *message)
     MessageBoxA(owner, message, APP, MB_OK | MB_ICONERROR);
 }
 
-static LONG read_value(const char *key, char *buffer, DWORD capacity)
-{
-    HKEY handle;
-    DWORD type;
-    LONG result = RegOpenKeyExA(HKEY_LOCAL_MACHINE, key, 0, KEY_QUERY_VALUE, &handle);
-    if (result != ERROR_SUCCESS) return result;
-    result = RegQueryValueExA(handle, APP, NULL, &type, (BYTE *)buffer, &capacity);
-    RegCloseKey(handle);
-    if (result == ERROR_SUCCESS && (type != REG_SZ || capacity == 0 || buffer[capacity - 1] != '\0'))
-        return ERROR_INVALID_DATA;
-    return result;
-}
-
-static LONG write_value(const char *key, const char *value)
-{
-    HKEY handle;
-    LONG result = RegCreateKeyExA(HKEY_LOCAL_MACHINE, key, 0, NULL, 0,
-                                 KEY_SET_VALUE, NULL, &handle, NULL);
-    if (result != ERROR_SUCCESS) return result;
-    result = RegSetValueExA(handle, APP, 0, REG_SZ, (const BYTE *)value, (DWORD)lstrlenA(value) + 1);
-    RegCloseKey(handle);
-    return result;
-}
-
-static LONG remove_value(const char *key)
-{
-    HKEY handle;
-    LONG result = RegOpenKeyExA(HKEY_LOCAL_MACHINE, key, 0, KEY_SET_VALUE, &handle);
-    if (result == ERROR_FILE_NOT_FOUND) return ERROR_SUCCESS;
-    if (result != ERROR_SUCCESS) return result;
-    result = RegDeleteValueA(handle, APP);
-    RegCloseKey(handle);
-    return result == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : result;
-}
-
 static void command_line(char *out, const char *argument)
 {
     wsprintfA(out, "\"%s\" %s", exe_path, argument);
 }
 
-static BOOL enabled(void)
+static BOOL enabled(void) { return startup_installed(&startup_config); }
+static void initialize_startup(void)
 {
-    char actual[MAX_PATH + 40], expected[MAX_PATH + 40];
-    command_line(expected, "/welcome");
-    if (read_value(REG_SERVICE, actual, sizeof(actual)) != ERROR_SUCCESS || lstrcmpiA(actual, expected))
-        return FALSE;
-    command_line(expected, "/session-ready");
-    return read_value(REG_RUN, actual, sizeof(actual)) == ERROR_SUCCESS && !lstrcmpiA(actual, expected);
+    UINT length=GetWindowsDirectoryA(system_ini,sizeof(system_ini));
+    if(!length || length+12>=sizeof(system_ini)) system_ini[0]=0;
+    else lstrcatA(system_ini,"\\SYSTEM.INI");
+    startup_config.root=HKEY_LOCAL_MACHINE;
+    startup_config.service_key=STARTUP_SERVICE; startup_config.run_key=STARTUP_RUN;
+    startup_config.once_key=STARTUP_ONCE; startup_config.backup_key=STARTUP_BACKUP;
+    startup_config.executable=exe_path; startup_config.ini=system_ini;
+    startup_config.write_ini=WritePrivateProfileStringA;
 }
-
-static BOOL configure(HWND owner, BOOL enable)
+static BOOL configure(HWND owner,BOOL enable)
 {
-    char old_service[MAX_PATH + 40], old_run[MAX_PATH + 40], command[MAX_PATH + 40];
-    LONG service_result, run_result, result;
+    DWORD error;
     HANDLE event;
-    service_result = read_value(REG_SERVICE, old_service, sizeof(old_service));
-    run_result = read_value(REG_RUN, old_run, sizeof(old_run));
-    if ((service_result != ERROR_SUCCESS && service_result != ERROR_FILE_NOT_FOUND) ||
-        (run_result != ERROR_SUCCESS && run_result != ERROR_FILE_NOT_FOUND)) {
-        error_box(owner, "Cannot read existing startup settings. No changes made.");
-        return FALSE;
+    char message[240];
+    if(enable && !(GetVersion()&0x80000000UL)) {
+        error_box(owner,"Automatic startup is intended for Windows 95/98/Me. Preview is available on other systems."); return FALSE;
     }
-    if (enable) {
-        if (!(GetVersion() & 0x80000000UL)) {
-            error_box(owner, "Automatic startup is intended for Windows 95/98/Me. Preview is available on other systems.");
-            return FALSE;
-        }
-        command_line(command, "/welcome");
-        if (service_result == ERROR_SUCCESS && lstrcmpiA(old_service, command)) {
-            error_box(owner, "Another Welcome95 installation owns the startup entry. Disable it first.");
-            return FALSE;
-        }
-        command_line(command, "/session-ready");
-        if (run_result == ERROR_SUCCESS && lstrcmpiA(old_run, command)) {
-            error_box(owner, "Another Welcome95 installation owns the session entry. Disable it first.");
-            return FALSE;
-        }
-        result = write_value(REG_RUN, command);
-        if (result == ERROR_SUCCESS) {
-            command_line(command, "/welcome");
-            result = write_value(REG_SERVICE, command);
-            if (result != ERROR_SUCCESS) {
-                LONG rollback = run_result == ERROR_SUCCESS ? write_value(REG_RUN, old_run) : remove_value(REG_RUN);
-                if (rollback != ERROR_SUCCESS)
-                    error_box(owner, "Startup failed and rollback failed. Remove the Welcome95 Run entry manually.");
-            }
-        }
-    } else {
-        command_line(command, "/welcome");
-        if (service_result == ERROR_SUCCESS && lstrcmpiA(old_service, command)) {
-            error_box(owner, "Startup belongs to another copy. Open that copy to disable it.");
-            return FALSE;
-        }
-        command_line(command, "/session-ready");
-        if (run_result == ERROR_SUCCESS && lstrcmpiA(old_run, command)) {
-            error_box(owner, "Session startup belongs to another copy. Open that copy to disable it.");
-            return FALSE;
-        }
-        result = remove_value(REG_SERVICE);
-        if (result == ERROR_SUCCESS) result = remove_value(REG_RUN);
-        event = OpenEventA(EVENT_MODIFY_STATE, FALSE, STOP_EVENT);
-        if (event) { SetEvent(event); CloseHandle(event); }
+    if(!system_ini[0]) { error_box(owner,"Cannot locate SYSTEM.INI. No startup changes made."); return FALSE; }
+    error=startup_configure(&startup_config,enable);
+    if(error) {
+        wsprintfA(message,"Cannot update Welcome95 startup (error %lu).\r\nThe previous shell backup is retained. Check ownership and SYSTEM.INI before retrying.",error);
+        error_box(owner,message); return FALSE;
     }
-    if (result != ERROR_SUCCESS) {
-        error_box(owner, "Cannot update startup settings. Check registry permissions and retry.");
-        return FALSE;
+    if(!enable) {
+        event=OpenEventA(EVENT_MODIFY_STATE,FALSE,STOP_EVENT);
+        if(event) { SetEvent(event); CloseHandle(event); }
+        event=OpenEventA(EVENT_MODIFY_STATE,FALSE,CLOSED_EVENT);
+        if(event) { SetEvent(event); CloseHandle(event); }
     }
     return TRUE;
+}
+
+/* A shell/startup gate runs in the newly logged-on user's environment. */
+static DWORD handoff(BOOL launch_shell)
+{
+    HANDLE ready,closed,initialized,stop;
+    STARTUPINFOA startup;
+    PROCESS_INFORMATION child;
+    char original[STARTUP_TEXT],command[MAX_PATH+40];
+    DWORD error=0,waited,started=GetTickCount();
+    DWORD_PTR result;
+    HWND target;
+    if(launch_shell) { error=startup_original(&startup_config,original,sizeof(original)); if(error) return error; }
+    if(!enabled()) goto launch;
+    ready=CreateEventA(NULL,TRUE,FALSE,READY_EVENT);
+    closed=CreateEventA(NULL,TRUE,FALSE,CLOSED_EVENT);
+    initialized=CreateEventA(NULL,TRUE,FALSE,CONTROLLER_EVENT);
+    stop=CreateEventA(NULL,TRUE,FALSE,STOP_EVENT);
+    if(!ready || !closed || !initialized || !stop) error=ERROR_NOT_ENOUGH_MEMORY;
+    target=FindWindowA("Welcome95.Controller",NULL);
+    if(!error && !target && WaitForSingleObject(stop,0)!=WAIT_OBJECT_0) {
+        zero_memory(&startup,sizeof(startup)); startup.cb=sizeof(startup);
+        command_line(command,"/welcome");
+        if(CreateProcessA(exe_path,command,NULL,NULL,FALSE,0,NULL,NULL,&startup,&child)) {
+            CloseHandle(child.hThread); CloseHandle(child.hProcess);
+        } else error=GetLastError();
+    }
+    while(!error && WaitForSingleObject(initialized,0)!=WAIT_OBJECT_0) {
+        if(WaitForSingleObject(stop,0)==WAIT_OBJECT_0) { error=ERROR_CANCELLED; break; }
+        if((DWORD)(GetTickCount()-started)>=30000) { error=ERROR_TIMEOUT; break; }
+        Sleep(20);
+    }
+    if(!error) {
+        target=FindWindowA("Welcome95.Controller",NULL);
+        result=0;
+        if(!target || !SendMessageTimeoutA(target,SESSION_STARTING,0,0,SMTO_ABORTIFHUNG,5000,&result) || !result)
+            error=ERROR_INVALID_WINDOW_HANDLE;
+    }
+    if(!error) {
+        do {
+            waited=WaitForSingleObject(closed,20);
+            if(waited==WAIT_OBJECT_0) break;
+            if(waited==WAIT_FAILED) { error=GetLastError(); break; }
+            if(WaitForSingleObject(stop,0)==WAIT_OBJECT_0) { error=ERROR_CANCELLED; break; }
+            if((DWORD)(GetTickCount()-started)>=30000) { error=ERROR_TIMEOUT; break; }
+        } while(TRUE);
+    }
+    /* Fail open on a broken controller, never leave the machine without a shell. */
+    if(error && stop) SetEvent(stop);
+    if(ready) CloseHandle(ready);
+    if(closed) CloseHandle(closed);
+    if(initialized) CloseHandle(initialized);
+    if(stop) CloseHandle(stop);
+launch:
+    if(!launch_shell) return 0;
+    zero_memory(&startup,sizeof(startup)); startup.cb=sizeof(startup);
+    if(!CreateProcessA(NULL,original,NULL,NULL,FALSE,0,NULL,NULL,&startup,&child)) return GetLastError();
+    target=FindWindowA("Welcome95.Controller",NULL);
+    if(target) SendMessageTimeoutA(target,SHELL_STARTED,child.dwProcessId,0,SMTO_ABORTIFHUNG,200,&result);
+    CloseHandle(child.hThread); CloseHandle(child.hProcess);
+    if(enabled()) startup_rearm(&startup_config);
+    return 0;
 }
 
 static void fill(HDC dc, RECT rectangle, COLORREF color)
@@ -334,11 +342,13 @@ static void paint_logo_at(HDC dc, int x, int y)
     label(dc, body_font, "95", suffix, DT_LEFT | DT_SINGLELINE);
     SetTextColor(dc, RGB(255,255,255));
 }
+static void login_hotkeys(HWND hwnd,BOOL enable);
 static void set_status_view(HWND hwnd, int view)
 {
     static const int controls[] = { ID_NATIVE, ID_SUBMIT, ID_POWER, ID_PREV, ID_NEXT, ID_PROFILE_SCROLL, ID_DONE, 201 };
     unsigned int index;
     status_view = view;
+    login_hotkeys(hwnd,view==VIEW_LOGIN);
     /* Cover the native field during shutdown without changing its visibility. */
     if(view==VIEW_SHUTDOWN && native_logon_attached())
         SetWindowPos(login_window,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
@@ -372,9 +382,11 @@ static void perform_power(PowerAction action,BOOL dos)
     char text[160];
     HWND owner=screen;
     login_hotkeys(owner,FALSE);
+    power_requested=action!=POWER_STANDBY; ending_unknown=FALSE;
     if(action!=POWER_STANDBY) set_status_view(owner,VIEW_SHUTDOWN);
     error=power_request(action,dos,owner,menu_power);
     if(error || action==POWER_STANDBY) {
+        power_requested=FALSE;
         if(IsWindow(owner)) { set_status_view(owner,VIEW_LOGIN); login_hotkeys(owner,TRUE); }
         if(error && error!=ERROR_CANCELLED) {
             wsprintfA(text,"Windows could not perform the selected power action.\r\nError: %lu",error);
@@ -441,7 +453,7 @@ static void paint_welcome(HWND hwnd)
     if (status_view == VIEW_SHUTDOWN) {
         paint_logo_at(dc,cx(332),cy(232));
         SetRect(&rectangle, cx(80), cy(338), cx(720), cy(389));
-        label(dc, body_font, russian_ui() ? "\307\340\342\345\360\370\345\355\350\345\040\360\340\341\356\362\373\040\127\151\156\144\157\167\163\056\056\056" : "Windows is shutting down...", rectangle, DT_CENTER | DT_SINGLELINE);
+        label(dc, body_font, ending_unknown ? (russian_ui() ? "\317\356\344\356\346\344\350\362\345..." : "Please wait...") : russian_ui() ? "\307\340\342\345\360\370\345\355\350\345\040\360\340\341\356\362\373\040\127\151\156\144\157\167\163\056\056\056" : "Windows is shutting down...", rectangle, DT_CENTER | DT_SINGLELINE);
         finish_paint(hwnd,&paint,dc,frame,old); return;
     }
     bitmap(dc,124,compact_layout() ? compact_x(128) : cx(398),compact_layout() ? compact_y(208) : 96,1,compact_layout() ? 170 : by(486)-96);
@@ -559,6 +571,7 @@ static void allow_logon(void)
     EnumWindows(find_logon, (LPARAM)&found);
     if (!found) return;
     login_window = found;
+    GetWindowThreadProcessId(found,&provider_process);
     login_was_topmost = (GetWindowLongA(found, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
     login_geometry(&x, &y, &width);
     if (!prefer_native && native_logon_attach(found, x, y, width)) {
@@ -599,22 +612,54 @@ static void allow_logon(void)
     InvalidateRect(screen, NULL, FALSE);
 }
 
+static BOOL window_above(HWND first,HWND second)
+{
+    HWND window=GetTopWindow(NULL);
+    while(window) {
+        if(window==first) return TRUE;
+        if(window==second) return FALSE;
+        window=GetWindow(window,GW_HWNDNEXT);
+    }
+    return FALSE;
+}
 static void maintain_topmost(HWND hwnd)
 {
-    HWND popup;
-    UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+    HWND input=NULL,popup=NULL,window;
+    HDWP batch;
+    BOOL correct;
+    UINT flags=SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER;
     if(power_dialog_active() || status_view==VIEW_SHUTDOWN) return;
-    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
-    if (status_view != VIEW_LOGIN || !login_window || !IsWindow(login_window) || !IsWindowVisible(login_window) ||
-        (!native_logon_attached() && !prefer_native)) return;
-    /* Keep the actual password controls above our own canvas. Owned error
-       messages are the sole intentional exception to the welcome's priority. */
-    SetWindowPos(login_window, HWND_TOPMOST, 0, 0, 0, 0, flags);
-    popup = GetLastActivePopup(login_window);
-    if (popup != login_window && IsWindowVisible(popup))
-        SetWindowPos(popup, HWND_TOPMOST, 0, 0, 0, 0, flags);
+    if(status_view==VIEW_LOGIN && login_window && IsWindowVisible(login_window) &&
+       (native_logon_attached() || prefer_native)) {
+        input=login_window;
+        popup=GetLastActivePopup(input);
+        if(popup==input || !IsWindowVisible(popup)) popup=NULL;
+    }
+    correct=(GetWindowLongA(hwnd,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0;
+    if(input && (!(GetWindowLongA(input,GWL_EXSTYLE)&WS_EX_TOPMOST) || !window_above(input,hwnd))) correct=FALSE;
+    if(popup && (!(GetWindowLongA(popup,GWL_EXSTYLE)&WS_EX_TOPMOST) || !window_above(popup,input))) correct=FALSE;
+    for(window=GetTopWindow(NULL);window && window!=hwnd;window=GetWindow(window,GW_HWNDNEXT))
+        if(window!=input && window!=popup && IsWindowVisible(window)) correct=FALSE;
+    if(correct) return;
+    batch=BeginDeferWindowPos(3);
+    if(batch) batch=DeferWindowPos(batch,hwnd,HWND_TOPMOST,0,0,0,0,flags);
+    if(batch && input) batch=DeferWindowPos(batch,input,HWND_TOPMOST,0,0,0,0,flags);
+    if(batch && popup) batch=DeferWindowPos(batch,popup,HWND_TOPMOST,0,0,0,0,flags);
+    if(batch && EndDeferWindowPos(batch)) return;
+    /* Allocation failure: place the canvas below input instead of raising it
+       over the password rectangle and then uncovering it on every timer tick. */
+    if(input) SetWindowPos(input,HWND_TOPMOST,0,0,0,0,flags);
+    SetWindowPos(hwnd,input ? input : HWND_TOPMOST,0,0,0,0,flags);
+    if(popup) SetWindowPos(popup,HWND_TOPMOST,0,0,0,0,flags);
 }
 
+static void begin_logon_cycle(BOOL reset);
+static void release_ui_fonts(void);
+static void close_canvas(void)
+{
+    if(screen && IsWindow(screen)) DestroyWindow(screen);
+    if(closed_event) SetEvent(closed_event); /* after DestroyWindow has returned */
+}
 static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp)
 {
     int x, y, width, index;
@@ -623,8 +668,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     case WM_CREATE:
         if (preview_status) preview_started = GetTickCount();
         SetTimer(hwnd, TICK, 100, NULL);
-        escape_hotkey = RegisterHotKey(hwnd, 1, 0, VK_ESCAPE);
-        close_hotkey = RegisterHotKey(hwnd, 2, MOD_ALT, VK_F4);
+        if(status_view==VIEW_LOGIN) login_hotkeys(hwnd,TRUE);
         CreateWindowA("BUTTON", "Trouble signing in?", WS_CHILD | BS_PUSHBUTTON,
             rx(625), by(572), 150, 23, hwnd, (HMENU)ID_NATIVE, instance, NULL);
         SendDlgItemMessageA(hwnd, ID_NATIVE, WM_SETFONT, (WPARAM)small_font, TRUE);
@@ -661,12 +705,18 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         return 0;
     case WM_QUERYENDSESSION:
         power_dialog_close();
-        if (!((DWORD)lp & 0x80000000UL)) set_status_view(hwnd, VIEW_SHUTDOWN);
+        if (!((DWORD)lp & ENDSESSION_LOGOFF_95)) { ending_unknown=!power_requested; set_status_view(hwnd,VIEW_SHUTDOWN); }
         return TRUE;
     case WM_ENDSESSION:
-        if (wp) { DestroyWindow(hwnd); return 0; }
+        if (wp) {
+            if(resident_mode && (!power_requested || ((DWORD)lp&ENDSESSION_LOGOFF_95))) {
+                SetEvent(((DWORD)lp&ENDSESSION_LOGOFF_95) ? logoff_event : ended_event); return 0;
+            }
+            DestroyWindow(hwnd); return 0;
+        }
         if (!wp && status_view == VIEW_SHUTDOWN) {
-            if (monitor_active) DestroyWindow(hwnd);
+            power_requested=FALSE; ending_unknown=FALSE;
+            if (monitor_active && (!resident_mode || shutdown_only_canvas)) DestroyWindow(hwnd);
             else { set_status_view(hwnd, VIEW_LOGIN); login_hotkeys(hwnd,TRUE); }
         }
         return 0;
@@ -746,7 +796,9 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd, profiles_count()>1 ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE);
         }
         if (finishing && (DWORD)(GetTickCount() - finish_time) >= 1000) {
-            DestroyWindow(hwnd); return 0;
+            if(resident_mode) { session_running=TRUE; close_canvas(); }
+            else DestroyWindow(hwnd);
+            return 0;
         }
         if (preview_status && (DWORD)(GetTickCount()-preview_started) >= 5000) { DestroyWindow(hwnd); return 0; }
         if (status_view != VIEW_LOGIN) { maintain_topmost(hwnd); return 0; }
@@ -803,35 +855,105 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     return DefWindowProcA(hwnd, message, wp, lp);
 }
 
+static void begin_logon_cycle(BOOL reset)
+{
+    if(screen && IsWindow(screen)) DestroyWindow(screen);
+    if(reset) ResetEvent(ready_event);
+    ResetEvent(closed_event); ResetEvent(logoff_event);
+    if(ended_event) ResetEvent(ended_event);
+    if(shell_process) CloseHandle(shell_process);
+    shell_process=NULL; session_running=FALSE; awaiting_logon=FALSE;
+    power_requested=FALSE; ending_unknown=FALSE; shutdown_only_canvas=FALSE;
+    finishing=FALSE; prefer_native=FALSE; pending_profile=FALSE; servicing_logon=FALSE;
+    automatic_attempted=FALSE; compact_selected=FALSE; selected_profile=profile_page=0;
+    next_logon_attempt=next_profile_attempt=0; status_view=VIEW_LOGIN;
+    profiles_load();
+    if(!body_font) { bundled_fonts_load(instance); create_ui_fonts(); }
+    screen=CreateWindowExA(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,"Welcome95.Screen",APP,
+        WS_POPUP|WS_VISIBLE|WS_CLIPCHILDREN,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
+        NULL,NULL,instance,NULL);
+    if(screen) UpdateWindow(screen);
+    else { if(stop_event) SetEvent(stop_event); if(closed_event) SetEvent(closed_event); }
+    if(enabled()) startup_rearm(&startup_config);
+}
 static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp)
 {
-    switch (message) {
-    case WM_CREATE: SetTimer(hwnd, TICK, 250, NULL); return 0;
+    switch(message) {
+    case WM_CREATE: SetTimer(hwnd,TICK,resident_mode ? 100 : 250,NULL); return 0;
+    case SESSION_STARTING:
+        if(!resident_mode) return FALSE;
+        /* Serialize a fast new login with pending end-session notifications.
+           Reset old acknowledgements before publishing this cycle's readiness. */
+        if(awaiting_logon || WaitForSingleObject(logoff_event,0)==WAIT_OBJECT_0 ||
+           (ended_event && WaitForSingleObject(ended_event,0)==WAIT_OBJECT_0)) begin_logon_cycle(TRUE);
+        SetEvent(ready_event); return TRUE;
+    case SHELL_STARTED:
+        if(resident_mode) {
+            if(shell_process) CloseHandle(shell_process);
+            shell_process=OpenProcess(SYNCHRONIZE,FALSE,(DWORD)wp);
+        }
+        return 0;
     case WM_QUERYENDSESSION:
-        if (!((DWORD)lp & 0x80000000UL) && enabled() && !FindWindowA("Welcome95.Screen", NULL)) {
-            status_view = VIEW_SHUTDOWN;
-            screen = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "Welcome95.Screen", APP,
-                WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
-                NULL, NULL, instance, NULL);
-            if (screen) UpdateWindow(screen);
+        if(!((DWORD)lp&ENDSESSION_LOGOFF_95) && enabled() && !FindWindowA("Welcome95.Screen",NULL) &&
+           (resident_mode || !FindWindowA("Welcome95.Controller",NULL))) {
+            if(!body_font) { bundled_fonts_load(instance); create_ui_fonts(); }
+            status_view=VIEW_SHUTDOWN; shutdown_only_canvas=TRUE; ending_unknown=!power_requested;
+            screen=CreateWindowExA(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,"Welcome95.Screen",APP,
+                WS_POPUP|WS_VISIBLE|WS_CLIPCHILDREN,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
+                NULL,NULL,instance,NULL);
+            if(screen) UpdateWindow(screen);
         }
         return TRUE;
     case WM_ENDSESSION:
-        if (screen && IsWindow(screen)) DestroyWindow(screen);
-        if (wp) DestroyWindow(hwnd);
+        if(wp && (!resident_mode || !power_requested || ((DWORD)lp&ENDSESSION_LOGOFF_95))) {
+            HANDLE event=CreateEventA(NULL,TRUE,FALSE,((DWORD)lp&ENDSESSION_LOGOFF_95) ? LOGOFF_EVENT : ENDED_EVENT);
+            if(event) { SetEvent(event); CloseHandle(event); }
+            if(resident_mode) return 0;
+        }
+        if(!wp) { power_requested=FALSE; ending_unknown=FALSE; }
+        if(screen && IsWindow(screen) && (wp || status_view==VIEW_SHUTDOWN)) {
+            if(!wp && resident_mode && !shutdown_only_canvas) set_status_view(screen,VIEW_LOGIN);
+            else DestroyWindow(screen);
+        }
+        if(wp) DestroyWindow(hwnd);
         return 0;
     case WM_TIMER:
-        if (ready_event && (DWORD)(GetTickCount()-monitor_started) >= 15000) {
-            CloseHandle(ready_event); ready_event = NULL;
+        if(stop_event && WaitForSingleObject(stop_event,0)==WAIT_OBJECT_0) {
+            close_canvas(); DestroyWindow(hwnd); return 0;
         }
-        if (stop_event && WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
-            if (screen && IsWindow(screen)) DestroyWindow(screen);
-            DestroyWindow(hwnd);
+        if(resident_mode) {
+            if(WaitForSingleObject(logoff_event,0)==WAIT_OBJECT_0) {
+                ResetEvent(logoff_event);
+                if(session_running || awaiting_logon) begin_logon_cycle(TRUE);
+            } else if(ended_event && WaitForSingleObject(ended_event,0)==WAIT_OBJECT_0) {
+                ResetEvent(ended_event);
+                close_canvas(); release_ui_fonts();
+                ResetEvent(ready_event); ResetEvent(closed_event);
+                session_running=FALSE; awaiting_logon=TRUE; finishing=FALSE;
+                if(shell_process) CloseHandle(shell_process);
+                shell_process=NULL;
+                if(enabled()) startup_rearm(&startup_config);
+            } else if(awaiting_logon) {
+                HWND found=NULL;
+                EnumWindows(find_logon,(LPARAM)&found);
+                if(found) begin_logon_cycle(TRUE);
+                else if(WaitForSingleObject(ready_event,0)==WAIT_OBJECT_0) begin_logon_cycle(FALSE);
+            } else if(session_running && !screen && shell_process &&
+                      WaitForSingleObject(shell_process,0)==WAIT_OBJECT_0) {
+                /* Recovery if the normal per-session notifier was not started:
+                   require the previous provider process's password dialog too. */
+                HWND found=NULL; DWORD process=0;
+                EnumWindows(find_logon,(LPARAM)&found);
+                if(found) GetWindowThreadProcessId(found,&process);
+                if(found && process==provider_process) begin_logon_cycle(TRUE);
+            }
+        } else if(ready_event && (DWORD)(GetTickCount()-monitor_started)>=15000) {
+            CloseHandle(ready_event); ready_event=NULL;
         }
         return 0;
-    case WM_DESTROY: KillTimer(hwnd, TICK); PostQuitMessage(0); return 0;
+    case WM_DESTROY: KillTimer(hwnd,TICK); PostQuitMessage(0); return 0;
     }
-    return DefWindowProcA(hwnd, message, wp, lp);
+    return DefWindowProcA(hwnd,message,wp,lp);
 }
 
 static void update_settings(HWND hwnd)
@@ -854,7 +976,7 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
     char command[MAX_PATH + 40];
     switch (message) {
     case WM_CREATE:
-        child = CreateWindowA("STATIC", "Welcome95\r\nWindows XP-inspired welcome for Windows 95.\r\n\r\nKeep this EXE in a permanent local folder before enabling.\r\nWindows retains its own logon dialog and password handling.\r\nStartup timing requires testing on your Windows 95 installation.",
+        child = CreateWindowA("STATIC", "Welcome95\r\nWindows XP-inspired welcome for Windows 95.\r\n\r\nEnable delays your saved shell until welcome closes.\r\nDisable restores your previous shell.\r\nWindows keeps its own password verification.\r\nKeep this EXE in a permanent local folder.",
             WS_CHILD | WS_VISIBLE, 20, 20, 460, 115, hwnd, NULL, instance, NULL);
         SendMessageA(child, WM_SETFONT, (WPARAM)small_font, TRUE);
         child = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE, 20, 145, 460, 25,
@@ -871,7 +993,7 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case ID_ENABLE:
-            if (configure(hwnd, TRUE)) MessageBoxA(hwnd, "Enabled. Restart Windows to test startup.\r\nKeep this executable at its current path.", APP, MB_OK | MB_ICONINFORMATION);
+            if (configure(hwnd, TRUE)) MessageBoxA(hwnd, "Enabled. The previous shell has been backed up.\r\nRestart Windows to test startup.\r\nKeep this executable at its current path.", APP, MB_OK | MB_ICONINFORMATION);
             update_settings(hwnd); break;
         case ID_DISABLE: configure(hwnd, FALSE); update_settings(hwnd); break;
         case ID_PREVIEW_SINGLE:
@@ -902,6 +1024,7 @@ static void release_ui_fonts(void)
     DeleteObject(body_font); DeleteObject(small_font);
     bundled_fonts_release();
     power_operations_release();
+    status_font=welcome_font=title_font=body_font=small_font=NULL;
 }
 
 int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int show)
@@ -916,11 +1039,19 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
     instance = current;
     length = GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
     if (!length || length >= sizeof(exe_path) - 1) return 1;
+    initialize_startup();
+    if(!lstrcmpiA(arguments,"/shell") || !lstrcmpiA(arguments,"/startup")) {
+        DWORD error;
+        if(!(GetVersion()&0x80000000UL)) return 1;
+        error=handoff(!lstrcmpiA(arguments,"/shell"));
+        if(error) error_box(NULL,"Welcome95 cannot start the saved shell. Restore SYSTEM.INI [boot] shell from the Welcome95 backup or use Disable.");
+        return error ? 1 : 0;
+    }
     session_monitor = !lstrcmpiA(arguments, "/session-ready");
     if (session_monitor) {
         ready_event = CreateEventA(NULL, TRUE, FALSE, READY_EVENT);
         if (!ready_event) return 1;
-        SetEvent(ready_event);
+        if(!enabled()) SetEvent(ready_event);
         monitor_instance = CreateEventA(NULL, TRUE, FALSE, "Welcome95.SessionMonitor");
         if (!monitor_instance) { CloseHandle(ready_event); return 1; }
         if (GetLastError() == ERROR_ALREADY_EXISTS) { CloseHandle(monitor_instance); CloseHandle(ready_event); return 0; }
@@ -945,7 +1076,7 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
         error_box(NULL, "Automatic welcome mode supports Windows 95/98/Me only. Use Preview to inspect the screen."); return 1;
     }
     if (welcome || preview) {
-        running_event = CreateEventA(NULL, TRUE, FALSE, INSTANCE_EVENT);
+        running_event = CreateEventA(NULL, TRUE, FALSE, preview ? "Welcome95.Preview" : INSTANCE_EVENT);
         if (!running_event) return 1;
         if (GetLastError() == ERROR_ALREADY_EXISTS) { CloseHandle(running_event); return 0; }
         if (!preview) {
@@ -958,19 +1089,35 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
             }
         }
     }
-    profiles_load();
-    bundled_fonts_load(instance);
-    create_ui_fonts();
+    if(welcome) {
+        union { FARPROC raw; RegisterService service; } address;
+        closed_event=CreateEventA(NULL,TRUE,FALSE,CLOSED_EVENT);
+        logoff_event=CreateEventA(NULL,TRUE,FALSE,LOGOFF_EVENT);
+        ended_event=CreateEventA(NULL,TRUE,FALSE,ENDED_EVENT);
+        controller_event=CreateEventA(NULL,TRUE,FALSE,CONTROLLER_EVENT);
+        if(!closed_event || !logoff_event || !controller_event || !ended_event) return 1;
+        address.raw=GetProcAddress(GetModuleHandleA("kernel32.dll"),"RegisterServiceProcess");
+        register_service=address.service;
+        if(!register_service || !register_service(GetCurrentProcessId(),1)) return 1;
+        resident_mode=monitor_active=TRUE;
+    }
+    if(!session_monitor || !FindWindowA("Welcome95.Controller",NULL)) {
+        profiles_load(); bundled_fonts_load(instance); create_ui_fonts();
+    }
     zero_memory(&cls, sizeof(cls));
     cls.hInstance = instance; cls.hCursor = LoadCursor(NULL, IDC_ARROW);
     cls.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     cls.lpfnWndProc = welcome || preview || session_monitor ? welcome_proc : settings_proc;
     cls.lpszClassName = welcome || preview || session_monitor ? "Welcome95.Screen" : "Welcome95.Settings";
     if (!RegisterClassA(&cls)) { release_ui_fonts(); return 1; }
-    if (session_monitor) {
-        cls.lpfnWndProc = monitor_proc; cls.lpszClassName = "Welcome95.Monitor";
+    if (session_monitor || welcome) {
+        cls.lpfnWndProc = monitor_proc; cls.lpszClassName = welcome ? "Welcome95.Controller" : "Welcome95.Monitor";
         if (!RegisterClassA(&cls)) { release_ui_fonts(); return 1; }
         window = CreateWindowA(cls.lpszClassName, APP, WS_OVERLAPPED, 0, 0, 0, 0, NULL, NULL, instance, NULL);
+        if(welcome && window) {
+            controller=window; begin_logon_cycle(FALSE);
+            if(screen) SetEvent(controller_event);
+        }
     } else if (welcome || preview) {
         window = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, cls.lpszClassName, APP,
             WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
@@ -990,6 +1137,12 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
             TranslateMessage(&message); DispatchMessageA(&message);
         }
     }
+    if(register_service && resident_mode) register_service(GetCurrentProcessId(),0);
+    if(shell_process) CloseHandle(shell_process);
+    if(closed_event) CloseHandle(closed_event);
+    if(logoff_event) CloseHandle(logoff_event);
+    if(ended_event) CloseHandle(ended_event);
+    if(controller_event) CloseHandle(controller_event);
     if (ready_event) CloseHandle(ready_event);
     if (stop_event) CloseHandle(stop_event);
     if (running_event) CloseHandle(running_event);

@@ -9,9 +9,9 @@ LDFLAGS = -mwindows -nostdlib -Wl,--subsystem,windows:4.0,--major-os-version,4,-
 .PHONY: all clean inspect test-helper test-helper64
 all: build/welcome95.exe
 
-build/welcome95.exe: src/welcome95.c src/native_logon.c src/native_logon.h src/profiles.c src/profiles.h src/fonts.c src/fonts.h src/power_dialog.c src/power_dialog.h src/power_actions.c src/power_actions.h src/shutdown_dos.c src/shutdown_dos.h build/assets.o Makefile
+build/welcome95.exe: src/welcome95.c src/native_logon.c src/native_logon.h src/profiles.c src/profiles.h src/fonts.c src/fonts.h src/power_dialog.c src/power_dialog.h src/power_actions.c src/power_actions.h src/shutdown_dos.c src/shutdown_dos.h src/startup.c src/startup.h build/assets.o Makefile
 	mkdir -p build
-	$(CC) $(CFLAGS) src/welcome95.c src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c build/assets.o -o $@ $(LDFLAGS) -Wl,--entry,_welcome_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
+	$(CC) $(CFLAGS) src/welcome95.c src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c src/startup.c build/assets.o -o $@ $(LDFLAGS) -Wl,--entry,_welcome_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
 
 inspect: all
 	$(OBJDUMP) -p build/welcome95.exe
@@ -23,15 +23,15 @@ build/native_logon_test.exe: tests/native_logon_test.c src/native_logon.c src/na
 	$(CC) $(CFLAGS) tests/native_logon_test.c src/native_logon.c -o $@ $(LDFLAGS) -Wl,--entry,_test_entry -luser32 -lgdi32 -lkernel32
 
 # 64-bit test executables run under Wine64; production remains a Win95 x86 EXE.
-test-helper64: build/native_logon_test64.exe build/topmost_test64.exe build/fonts_test64.exe build/profiles_test64.exe build/render_test64.exe build/power_test64.exe build/dos_test64.exe build/layout_test64.exe
+test-helper64: build/native_logon_test64.exe build/topmost_test64.exe build/fonts_test64.exe build/profiles_test64.exe build/render_test64.exe build/power_test64.exe build/dos_test64.exe build/layout_test64.exe build/startup_test64.exe build/session_test64.exe
 
 build/native_logon_test64.exe: tests/native_logon_test.c src/native_logon.c src/native_logon.h Makefile
 	mkdir -p build
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/native_logon_test.c src/native_logon.c -o $@ -mwindows -nostdlib -Wl,--entry,test_entry -luser32 -lgdi32 -lkernel32
 
-build/topmost_test64.exe: tests/topmost_test.c src/welcome95.c src/native_logon.c src/native_logon.h src/profiles.c src/profiles.h src/fonts.c src/fonts.h src/power_dialog.c src/power_dialog.h src/power_actions.c src/power_actions.h src/shutdown_dos.c src/shutdown_dos.h Makefile
+build/topmost_test64.exe: tests/topmost_test.c src/welcome95.c src/native_logon.c src/native_logon.h src/profiles.c src/profiles.h src/fonts.c src/fonts.h src/power_dialog.c src/power_dialog.h src/power_actions.c src/power_actions.h src/shutdown_dos.c src/shutdown_dos.h src/startup.c src/startup.h Makefile
 	mkdir -p build
-	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/topmost_test.c src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c -o $@ -mwindows -nostdlib -Wl,--entry,topmost_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
+	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/topmost_test.c src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c src/startup.c -o $@ -mwindows -nostdlib -Wl,--entry,topmost_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
 
 clean:
 	rm -rf build
@@ -48,16 +48,16 @@ build/assets64.o: assets/welcome95.rc $(wildcard assets/*.bmp) $(wildcard assets
 build/fonts_test64.exe: tests/fonts_test.c src/fonts.c src/fonts.h build/assets64.o Makefile
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/fonts_test.c src/fonts.c build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,fonts_test_entry -luser32 -lgdi32 -lkernel32
 
-build/preview64.exe: src/welcome95.c src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c build/assets64.o Makefile
-	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) src/welcome95.c src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,welcome_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
+build/preview64.exe: src/welcome95.c src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c src/startup.c build/assets64.o Makefile
+	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) src/welcome95.c src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c src/startup.c build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,welcome_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
 
 build/profiles_test64.exe: tests/profiles_test.c src/profiles.c src/profiles.h Makefile
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/profiles_test.c -o $@ -mwindows -nostdlib -Wl,--entry,profiles_test_entry -luser32 -ladvapi32 -lkernel32
 
-build/render_test64.exe: tests/render_test.c src/welcome95.c src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c build/assets64.o Makefile
-	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/render_test.c src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,render_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
+build/render_test64.exe: tests/render_test.c src/welcome95.c src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c src/startup.c build/assets64.o Makefile
+	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/render_test.c src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c src/startup.c build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,render_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
 
-POWER_SOURCES = src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c
+POWER_SOURCES = src/native_logon.c src/profiles.c src/fonts.c src/power_dialog.c src/power_actions.c src/shutdown_dos.c src/startup.c
 build/power_test64.exe: tests/power_test.c src/welcome95.c $(POWER_SOURCES) $(wildcard src/*.h) build/assets64.o Makefile
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/power_test.c $(POWER_SOURCES) build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,power_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
 
@@ -66,3 +66,9 @@ build/dos_test64.exe: tests/dos_test.c tests/power_dos_cases.h src/shutdown_dos.
 
 build/layout_test64.exe: tests/layout_test.c src/welcome95.c $(POWER_SOURCES) $(wildcard src/*.h) build/assets64.o Makefile
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/layout_test.c $(POWER_SOURCES) build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,layout_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
+
+build/startup_test64.exe: tests/startup_test.c src/startup.c src/startup.h Makefile
+	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/startup_test.c src/startup.c -o $@ -mwindows -nostdlib -Wl,--entry,startup_test_entry -luser32 -ladvapi32 -lkernel32
+
+build/session_test64.exe: tests/session_test.c src/welcome95.c $(POWER_SOURCES) $(wildcard src/*.h) build/assets64.o Makefile
+	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/session_test.c $(POWER_SOURCES) build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,session_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32

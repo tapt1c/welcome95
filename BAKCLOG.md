@@ -178,3 +178,44 @@ provider even if native OK is disabled. It stays manual in that case; enabling
 OK after the user begins typing cannot trigger a delayed password-clearing attempt.
 An already modified native Edit also remains manual (EM_GETMODIFY metadata only).
 The current suite has 268 checks per resolution, including 37 layout/login checks.
+
+
+## Recorded boot flicker, shell timing and logoff (current change)
+
+Evidence: the supplied 27.35s recording shows a shell splash/desktop appearing
+before welcome completes; the 9.3s logoff recording returns to the native network
+password dialog without Welcome95. Existing code raised the canvas and then its
+native input every 100ms, and exited both startup canvas and per-session observer.
+This supports the fixes; a video alone does not prove every display-driver cause.
+
+Implemented stable-priority checks and batched z-order updates. Added a registered
+Win9x service controller, ordinary session-end notifier and per-cycle event reset.
+Explicit logoff recreates login; reasonless session end releases fonts/canvas and
+waits for the next provider or OS handshake. Shutdown cancellation preserves an
+active login. Preview has its own instance lock and remains inert.
+
+Enable installs a saved-shell proxy plus synchronous RunOnce gate. Both wait for
+post-DestroyWindow acknowledgement and the existing >=1s loading interval. Pending
+end-session notifications are serialized with new startup requests. The previous
+shell command/presence is stored in the registry and a flushed, unique W95xxxx.BAK
+beside the EXE before changing SYSTEM.INI. Readback failures roll back owned entries
+and shell. Disable restores the shell, keeps recovery data and releases waiters.
+Recursive shell configurations and foreign ownership are rejected. No process
+suspension, password handling replacement or unrelated startup deletion is used.
+
+Validation: 332 checks per resolution under Wine64/Xvfb: previous 268 plus 31 private startup
+configuration/rollback/recovery cases and 33 real inter-process lifecycle checks.
+The child shell is inert and only writes a time marker; logoff is synthetic.
+Production remains CRT-free i386/Windows 4.0 with baseline system imports.
+Implementation and DOS recovery: docs/BOOT_FLOW.md.
+
+- [ ] Real Windows 95: confirm RegisterServiceProcess survival, actual MPR logoff
+      notification behavior (including no reason), repeated logon and profile reload.
+- [ ] Confirm SYSTEM.INI proxy + HKLM RunOnce order with both native Explorer and
+      Explorer95; ordinary user startup must follow welcome closure.
+- [ ] Recheck flicker with the actual display driver, password errors and topmost apps.
+- [ ] Check shutdown cancellation, temporary-font cleanup and DOS recovery on the VM.
+
+The old Run-only limitations above describe earlier versions; the current startup
+model uses RunOnce plus a shell proxy. System services and unrelated RunOnce jobs
+are not deferred by the welcome gate.
