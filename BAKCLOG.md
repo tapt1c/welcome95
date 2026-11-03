@@ -371,3 +371,13 @@ main/boot imports are audited.
 
 - [ ] Visually confirm the larger default-font stars and full Russian captions on
       the user's Win95; font rasterization and high-DPI variants remain target checks.
+
+
+## Smaller welcome power caption
+
+Reduced only the footer power-caption Arial height from 20px to 18px using its
+own font with normal cleanup. The 245x29 button, 26px icon, anchors, password and
+other UI fonts retain their previous geometry. The existing Russian-width test
+now measures the actual caption font. Validation: 387 checks per resolution in
+the three standard Wine modes and both production PE audits; Win95 rendering
+still requires visual confirmation on the user's display.

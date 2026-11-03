@@ -44,7 +44,7 @@
 
 static HINSTANCE instance;
 static HWND screen;
-static HFONT title_font, body_font, small_font, welcome_font, status_font;
+static HFONT title_font, body_font, small_font, welcome_font, status_font, power_caption_font;
 static int status_view;
 static BOOL monitor_active, preview_status;
 static DWORD preview_started, monitor_started;
@@ -342,6 +342,8 @@ static void create_ui_fonts(void)
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
     body_font = CreateFontA(-20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
+    power_caption_font = CreateFontA(-18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
     small_font = CreateFontA(-font_pixels(9), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
     status_font = CreateFontA(-font_pixels(8), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
@@ -536,7 +538,7 @@ static void draw_button(DRAWITEMSTRUCT *item)
         }
         bitmap(dc, 107, rectangle.left, rectangle.top, 26, 26);
         rectangle.left += 34;
-        label(dc, body_font, ui_text("\302\373\352\353\376\367\350\362\374 \352\356\354\357\374\376\362\345\360","Turn off computer"), rectangle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        label(dc, power_caption_font, ui_text("\302\373\352\353\376\367\350\362\374 \352\356\354\357\374\376\362\345\360","Turn off computer"), rectangle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
     if(state) RestoreDC(dc,state);
 }
@@ -1120,10 +1122,10 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
 static void release_ui_fonts(void)
 {
     DeleteObject(status_font); DeleteObject(welcome_font); DeleteObject(title_font);
-    DeleteObject(body_font); DeleteObject(small_font);
+    DeleteObject(body_font); DeleteObject(small_font); DeleteObject(power_caption_font);
     bundled_fonts_release();
     power_operations_release();
-    status_font=welcome_font=title_font=body_font=small_font=NULL;
+    status_font=welcome_font=title_font=body_font=small_font=power_caption_font=NULL;
 }
 
 int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int show)

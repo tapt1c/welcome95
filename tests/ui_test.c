@@ -76,7 +76,7 @@ void ui_test_entry(void)
     KillTimer(screen,TICK);
     check(same_text(GetDlgItem(screen,ID_SUBMIT),"\302\356\351\362\350") && same_text(GetDlgItem(screen,ID_NATIVE),"\315\345 \363\344\340\270\362\361\377 \342\356\351\362\350?") &&
         same_text(GetDlgItem(screen,ID_DONE),"\307\340\352\360\373\362\374 \357\360\356\361\354\356\362\360"),"login, native fallback and finish-preview controls are fully Russian");
-    check(same_text(GetDlgItem(screen,ID_POWER),"\302\373\352\353\376\367\350\362\374 \352\356\354\357\374\376\362\345\360") && fits(body_font,"\302\373\352\353\376\367\350\362\374 \352\356\354\357\374\376\362\345\360",211,29,FALSE),
+    check(same_text(GetDlgItem(screen,ID_POWER),"\302\373\352\353\376\367\350\362\374 \352\356\354\357\374\376\362\345\360") && fits(power_caption_font,"\302\373\352\353\376\367\350\362\374 \352\356\354\357\374\376\362\345\360",211,29,FALSE),
         "the Russian power caption fits its original button beside the icon");
     check(fits(body_font,"\304\353\377 \342\365\356\344\340 \342\373\341\345\360\350\362\345 \361\342\356\270 \350\354\377",315,26,FALSE) && fits(body_font,"\304\353\377 \342\365\356\344\340 \342\342\345\344\350\362\345 \357\340\360\356\353\374",315,26,FALSE),
         "both Russian sign-in prompts fit the compact single-line area");
