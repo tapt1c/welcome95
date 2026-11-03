@@ -20,11 +20,22 @@ In this update:
 - Failed attachment writes welcome95-diagnostics.txt beside the EXE. It contains
   reason codes and control metadata, never edit contents or passwords.
 
-Status: 41 real-window checks passed under Wine64, including blank-name startup
-and selecting a card before native attachment. Actual recovery on the user's Win95 installation
-is still pending. If input remains unavailable, inspect the diagnostic file to
-identify unsupported controls, unavailable dialog state or placement/style failure.
-Do not assume the video proved a deadlock or that a Wine pass proves the fix on 95.
+Confirmed diagnosis from the user's uploaded diagnostics: the native dialog has
+14 controls, including active username Edit 21 and password Edit 23, plus hidden,
+disabled Edit 25/29 and checkbox Button 26/30. The old classifier counted all
+four Edit controls and rejected the dormant checkbox styles. It therefore never
+attached despite the visible form being a simple username/password login.
+
+Fixed: classify active roles after recording snapshots, ignoring controls only
+when both hidden and disabled. A visible disabled or hidden enabled extra field
+still rejects integration. Restore all original controls and states normally.
+The window fixture reproduces all 14 class/ID/style combinations from the log.
+
+Validation: 45 real-window checks passed under Wine64 (36 native integration,
+9 canvas/priority checks), including account selection, input clearing, dormant
+control preservation and rejection of extra fields that are not fully dormant.
+The production x86 PE audit passed. Actual boot/login on the user's Win95 system
+remains pending; later provider-specific failures are still possible.
 
 ## Required target-system checks
 

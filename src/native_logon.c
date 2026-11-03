@@ -96,6 +96,11 @@ static BOOL CALLBACK capture_control(HWND child, LPARAM parameter)
         return FALSE;
     }
     MapWindowPoints(NULL, saved.dialog, (POINT *)&control->rectangle, 2);
+    /* Win95's network logon template also contains dormant domain/options
+       controls. Preserve their snapshots, but do not mistake hidden AND disabled
+       controls for active input. Hidden enabled or visible disabled controls
+       remain subject to the normal conservative validation. */
+    if (!control->visible && !control->enabled) return TRUE;
     GetClassNameA(child, name, sizeof(name));
     style = GetWindowLongA(child, GWL_STYLE);
     id = GetWindowLongA(child, GWL_ID);
