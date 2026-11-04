@@ -525,3 +525,7 @@ void startup_trace(HKEY root,const char *key,const char *stage,DWORD code)
     }
     RegCloseKey(handle); trace_file(path,stage,code);
 }
+void startup_trace_executable(const char *executable,const char *stage,DWORD code)
+{
+    trace_file(executable,stage,code);
+}

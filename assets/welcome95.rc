@@ -14,3 +14,4 @@
 143 BITMAP "power-logo.bmp"
 
 300 RCDATA "../build/w95boot.exe"
+301 RCDATA "../build/w95panel.cpl"

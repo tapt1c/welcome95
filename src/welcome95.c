@@ -7,6 +7,7 @@
 #include "power_dialog.h"
 #include "power_actions.h"
 #include "startup.h"
+#include "control_panel.h"
 
 #define APP "Welcome95"
 #define REG_SERVICE "Software\\Microsoft\\Windows\\CurrentVersion\\RunServices"
@@ -63,6 +64,7 @@ static DWORD provider_process;
 typedef DWORD (WINAPI *RegisterService)(DWORD,DWORD);
 static RegisterService register_service;
 static StartupConfig startup_config;
+static PanelConfig panel_config;
 static char system_ini[MAX_PATH],boot_directory[MAX_PATH];
 static BOOL rescue_mode;
 static BOOL preview, finishing;
@@ -73,6 +75,8 @@ static BOOL prefer_native;
 static int selected_profile, profile_page;
 static BOOL pending_profile, servicing_logon, automatic_attempted, compact_selected;
 static BOOL single_submitted;
+/* Once a session has ended, require a deliberate choice until Windows restarts. */
+static BOOL require_account_choice;
 static DWORD single_started;
 static DWORD next_logon_attempt, next_profile_attempt;
 static BOOL escape_hotkey, close_hotkey;
@@ -94,7 +98,11 @@ static int compact_y(int value) { return value+(GetSystemMetrics(SM_CYSCREEN)-48
 static int card_x(int value) { return compact_layout() ? compact_x(value-268) : cx(value); }
 static int row_y(int value) { return compact_layout() ? compact_y(value) : cy(value); }
 static int loading_y(int value) { return compact_layout() ? compact_y(value-15) : cy(value); }
-static BOOL account_open(void) { return !compact_layout() || profiles_count()<=1 || compact_selected; }
+static BOOL account_open(void)
+{
+    if(require_account_choice && !compact_selected) return FALSE;
+    return !compact_layout() || profiles_count()<=1 || compact_selected;
+}
 static int page_size(void) { return compact_layout() ? 2 : 4; }
 static int page_first(void) { return profile_page*page_size(); }
 static int visible_profiles(void)
@@ -170,6 +178,14 @@ static void initialize_startup(void)
     startup_config.once_key=STARTUP_ONCE; startup_config.backup_key=STARTUP_BACKUP;
     startup_config.executable=exe_path; startup_config.ini=system_ini;
     startup_config.write_ini=WritePrivateProfileStringA;
+    panel_config.root=HKEY_LOCAL_MACHINE; panel_config.cpls_key=PANEL_CPLS;
+    panel_config.storage_key=PANEL_STORAGE; panel_config.executable=exe_path;
+    {
+        HRSRC resource=FindResourceA(instance,MAKEINTRESOURCEA(301),MAKEINTRESOURCEA(10));
+        HGLOBAL data=resource ? LoadResource(instance,resource) : NULL;
+        panel_config.image=data ? (const BYTE *)LockResource(data) : NULL;
+        panel_config.size=resource ? SizeofResource(instance,resource) : 0;
+    }
 }
 static BOOL configure(HWND owner,BOOL enable)
 {
@@ -177,6 +193,7 @@ static BOOL configure(HWND owner,BOOL enable)
     HANDLE event;
     BOOL migrated=FALSE;
     char message[512];
+    const char *stage;
     if(enable && !(GetVersion()&0x80000000UL)) {
         error_box(owner,ui_text("\300\342\362\356\347\340\357\363\361\352 \344\356\361\362\363\357\345\355 \362\356\353\374\352\356 \342 Windows 95/98/Me. \302 \344\360\363\343\350\365 \361\350\361\362\345\354\340\365 \344\356\361\362\363\357\345\355 \357\360\356\361\354\356\362\360.","Automatic startup is intended for Windows 95/98/Me. Preview is available on other systems.")); return FALSE;
     }
@@ -184,9 +201,9 @@ static BOOL configure(HWND owner,BOOL enable)
     if(enable && (!startup_config.boot_directory || !startup_config.boot_image || !startup_config.boot_size)) {
         error_box(owner,ui_text("\315\345 \363\344\340\353\356\361\374 \347\340\343\360\363\347\350\362\374 \354\356\344\363\353\374 \347\340\357\363\361\352\340 Windows 95. \315\340\361\362\360\356\351\352\350 \340\342\362\356\347\340\357\363\361\352\340 \355\345 \350\347\354\345\355\345\355\373.","Cannot load the Windows 95 bootstrap. No startup changes made.")); return FALSE;
     }
-    error=enable ? startup_enable_managed(&startup_config,&migrated) : startup_configure(&startup_config,FALSE);
+    error=panel_startup_configure(&panel_config,&startup_config,enable,&migrated,&stage);
     if(error) {
-        wsprintfA(message,ui_text("\315\345 \363\344\340\353\356\361\374 \350\347\354\345\355\350\362\374 \340\342\362\356\347\340\357\363\361\352 Welcome95 (\356\370\350\341\352\340 %lu).\r\n\335\362\340\357: %s\r\n\306\363\360\355\340\353 \363\361\362\340\355\356\342\352\350: LOGON\\W95START.LOG.","Cannot update Welcome95 startup (error %lu).\r\nStage: %s\r\nSetup log: LOGON\\W95START.LOG."),error,startup_failure_stage());
+        wsprintfA(message,ui_text("\315\345 \363\344\340\353\356\361\374 \350\347\354\345\355\350\362\374 \340\342\362\356\347\340\357\363\361\352 Welcome95 (\356\370\350\341\352\340 %lu).\r\n\335\362\340\357: %s\r\n\306\363\360\355\340\353 \363\361\362\340\355\356\342\352\350: LOGON\\W95START.LOG.","Cannot update Welcome95 startup (error %lu).\r\nStage: %s\r\nSetup log: LOGON\\W95START.LOG."),error,stage);
         error_box(owner,message); return FALSE;
     }
     if(!enable || migrated) {
@@ -567,7 +584,7 @@ static void paint_welcome(HWND hwnd)
         }
     }
     SetRect(&rectangle, rx(470), by(527), rx(775), by(570));
-    label(dc, small_font, ui_text("\317\356\361\353\345 \342\365\356\344\340 \354\356\346\355\356 \350\347\354\345\355\350\362\374 \355\340\361\362\360\356\351\352\350.\n\316\362\352\360\356\351\362\345 Welcome95 \344\353\377 \355\340\361\362\360\356\351\352\350 \375\352\360\340\355\340.","After you log on, you can change your settings.\nOpen Welcome95 to customize this screen."), rectangle, DT_LEFT | DT_WORDBREAK);
+    label(dc, small_font, ui_text("\317\356\361\353\345 \342\365\356\344\340 \354\356\346\355\356 \350\347\354\345\355\350\362\374 \355\340\361\362\360\356\351\352\350.\n\316\362\352\360\356\351\362\345 Welcome95 \342 \317\340\355\345\353\350 \363\357\360\340\342\353\345\355\350\377.","After you log on, you can change your settings.\nOpen Welcome95 in Control Panel."), rectangle, DT_LEFT | DT_WORDBREAK);
     finish_paint(hwnd,&paint,dc,frame,old);
 }
 
@@ -640,7 +657,7 @@ static void manual_single_login(void)
 static void try_single_account_logon(void)
 {
     BOOL posted;
-    if (automatic_attempted || preview || finishing || prefer_native || pending_profile ||
+    if (require_account_choice || automatic_attempted || preview || finishing || prefer_native || pending_profile ||
         !sign_in_view() || profiles_count()!=1 || !native_logon_attached()) return;
     automatic_attempted=TRUE;
     /* A provider that requires input before enabling OK stays manual. Waiting
@@ -1010,6 +1027,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
 
 static void begin_logon_cycle(BOOL reset)
 {
+    if(reset) require_account_choice=TRUE;
     if(screen && IsWindow(screen)) DestroyWindow(screen);
     if(reset) ResetEvent(ready_event);
     ResetEvent(closed_event); ResetEvent(logoff_event);
@@ -1019,11 +1037,11 @@ static void begin_logon_cycle(BOOL reset)
     power_requested=FALSE; ending_unknown=FALSE; shutdown_only_canvas=FALSE;
     finishing=FALSE; prefer_native=FALSE; pending_profile=FALSE; servicing_logon=FALSE;
     rescue_mode=FALSE;
-    automatic_attempted=FALSE; compact_selected=FALSE; selected_profile=profile_page=0;
+    automatic_attempted=require_account_choice; compact_selected=FALSE; selected_profile=profile_page=0;
     next_logon_attempt=next_profile_attempt=0; status_view=VIEW_LOGIN;
     profiles_load();
     single_submitted=FALSE; single_started=GetTickCount();
-    if(!preview && profiles_count()==1) status_view=VIEW_STARTING;
+    if(!preview && !require_account_choice && profiles_count()==1) status_view=VIEW_STARTING;
     if(!body_font) { bundled_fonts_load(instance); create_ui_fonts(); }
     screen=CreateWindowExA(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,"Welcome95.Screen",APP,
         WS_POPUP|WS_VISIBLE|WS_CLIPCHILDREN,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
@@ -1109,9 +1127,11 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         }
         if(resident_mode) {
             if(WaitForSingleObject(logoff_event,0)==WAIT_OBJECT_0) {
+                require_account_choice=TRUE;
                 ResetEvent(logoff_event);
                 if(session_running || awaiting_logon) begin_logon_cycle(TRUE);
             } else if(ended_event && WaitForSingleObject(ended_event,0)==WAIT_OBJECT_0) {
+                require_account_choice=TRUE;
                 ResetEvent(ended_event);
                 close_canvas(); release_ui_fonts();
                 ResetEvent(ready_event); ResetEvent(closed_event);
@@ -1181,13 +1201,13 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
         button(hwnd,ui_text("\301\345\347 \357\340\360\356\353\377","No password"),ID_PREVIEW_SINGLE,108,152,90);
         button(hwnd,ui_text("\321 \352\340\360\362\356\367\352\356\351","With account"),ID_PREVIEW_MULTI,206,152,90);
         button(hwnd,ui_text("\302\373\352\353\376\367\345\355\350\345","Shutdown"),ID_PREVIEW_SHUTDOWN,304,152,90);
-        child=CreateWindowA("STATIC",ui_text("\324\340\351\353\373: %WINDIR%\\LOGON.","Files: %WINDIR%\\LOGON."),WS_CHILD|WS_VISIBLE,10,184,384,14,hwnd,NULL,instance,NULL);
+        child=CreateWindowA("STATIC",ui_text("\317\356\361\353\345 \342\352\353\376\367\345\355\350\377: \317\340\355\345\353\374 \363\357\360\340\342\353\345\355\350\377 - Welcome95.","After enabling: Control Panel - Welcome95."),WS_CHILD|WS_VISIBLE,10,184,384,14,hwnd,NULL,instance,NULL);
         SendMessageA(child,WM_SETFONT,(WPARAM)settings_font,TRUE);
         update_settings(hwnd); return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case ID_ENABLE:
-            if (configure(hwnd, TRUE)) MessageBoxA(hwnd, ui_text("\302\352\353\376\367\345\355\356. \321\356\347\344\340\355\340 \360\345\347\345\360\342\355\340\377 \352\356\357\350\377 \357\360\345\346\355\345\351 \356\341\356\353\356\367\352\350.\r\n\317\345\360\345\347\340\343\360\363\347\350\362\345 Windows \344\353\377 \357\360\356\342\345\360\352\350 \340\342\362\356\347\340\357\363\361\352\340.\r\n\315\345 \357\345\360\345\354\345\371\340\351\362\345 \363\361\362\340\355\356\342\353\345\355\355\373\351 EXE.","Enabled. The previous shell has been backed up.\r\nRestart Windows to test startup.\r\nKeep this executable at its current path."), APP, MB_OK | MB_ICONINFORMATION);
+            if (configure(hwnd, TRUE)) MessageBoxA(hwnd, ui_text("\302\352\353\376\367\345\355\356. \321\356\347\344\340\355\340 \360\345\347\345\360\342\355\340\377 \352\356\357\350\377 \357\360\345\346\355\345\351 \356\341\356\353\356\367\352\350.\r\n\317\345\360\345\347\340\343\360\363\347\350\362\345 Windows \344\353\377 \357\360\356\342\345\360\352\350 \340\342\362\356\347\340\357\363\361\352\340.\r\n\315\340\361\362\360\356\351\352\350: \317\340\355\345\353\374 \363\357\360\340\342\353\345\355\350\377 - Welcome95.","Enabled. The previous shell has been backed up.\r\nRestart Windows to test startup.\r\nSettings: Control Panel - Welcome95."), APP, MB_OK | MB_ICONINFORMATION);
             update_settings(hwnd); break;
         case ID_DISABLE: configure(hwnd, FALSE); update_settings(hwnd); break;
         case ID_PREVIEW_STARTING:

@@ -84,7 +84,7 @@ void ui_test_entry(void)
         "the Russian power caption fits its original button beside the icon");
     check(fits(body_font,"\304\353\377 \342\365\356\344\340 \342\373\341\345\360\350\362\345 \361\342\356\270 \350\354\377",315,26,FALSE) && fits(body_font,"\304\353\377 \342\365\356\344\340 \342\342\345\344\350\362\345 \357\340\360\356\353\374",315,26,FALSE),
         "both Russian sign-in prompts fit the compact single-line area");
-    check(fits(small_font,"\317\356\361\353\345 \342\365\356\344\340 \354\356\346\355\356 \350\347\354\345\355\350\362\374 \355\340\361\362\360\356\351\352\350.\n\316\362\352\360\356\351\362\345 Welcome95 \344\353\377 \355\340\361\362\360\356\351\352\350 \375\352\360\340\355\340.",305,43,TRUE),
+    check(fits(small_font,"\317\356\361\353\345 \342\365\356\344\340 \354\356\346\355\356 \350\347\354\345\355\350\362\374 \355\340\361\362\360\356\351\352\350.\n\316\362\352\360\356\351\362\345 Welcome95 \342 \317\340\355\345\353\350 \363\357\360\340\342\353\345\355\350\377.",305,43,TRUE),
         "the Russian footer fits without extending into the password or screen edge");
     set_status_view(screen,VIEW_STARTING); single_started=GetTickCount()-4001; service_single_pending();
     check(status_view==VIEW_STARTING && !IsWindowVisible(GetDlgItem(screen,ID_SUBMIT)) && fits(message_font,"\307\340\357\363\361\352 Windows...",344,51,FALSE),

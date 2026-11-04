@@ -250,3 +250,23 @@ directory through legacy migration, preserve LastError and contain only fixed
 operation tags and numeric codes. Preserve the actual failure stage through
 successful rollback. A target screenshot with code 5 alone does not establish
 which API failed; state reproduced defects separately from target confirmation.
+
+
+## Logoff account choice and Control Panel launcher
+
+Keep require_account_choice across cycles after committed logoff, ambiguous
+end-session and provider/shell fallback. Do not rearm empty submission in
+begin_logon_cycle or a ready-event-only recovery. Initially collapse even one
+card at every resolution and defer native attachment until explicit selection.
+Cancelled end-session must preserve the initial startup policy.
+
+The native Control Panel item is a CPL launcher only; Settings stays in the EXE.
+Keep CPL and all its versions under LOGON. Registration owns only Welcome95
+in the standard Control Panel\Cpls key and the private ControlPanel Entry record.
+Validate owner/path/size/hash, preserve foreign values and loaded modules, and
+roll registration back when Enable fails. Disable restores startup independently
+of the applet and keeps the settings icon available for reenabling.
+Production must export only undecorated CPlApplet; never ship PanelTestHost.
+Audit the native CPL with tests/check_pe.py --panel in addition to main/boot.
+Use private HKCU/files plus inert launch callbacks for lifecycle tests, never
+the host's actual Control Panel registration or a real settings/shell launch.

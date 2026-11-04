@@ -521,3 +521,45 @@ Validation: 433 checks per resolution in the standard three Wine modes, includin
 Win95 Enable must be repeated; the screenshot alone does not prove which of the
 reproduced paths caused this particular refusal. If refusal remains, the exact
 new stage/log identifies the next target-specific failure.
+
+## Manual selection after logoff and Control Panel access (current)
+
+The user confirms the installer fix works. The 16-second Win95/86Box recording
+shows logoff returning immediately to lone Welcome and the desktop. Confirmed
+cause: begin_logon_cycle reset automatic_attempted and chose VIEW_STARTING for
+one account after every cycle. A sticky require_account_choice now blocks empty
+submission and startup status after committed logoff, ambiguous end-session and
+recovery paths. Each new cycle collapses even the sole card until a click, at
+VGA and larger resolutions. Selection opens real provider input without submit;
+explicit arrow still submits once. Cold startup remains eligible and cancelled
+logoff does not consume it. No password contents are read to make this choice.
+
+Added a native Control Panel launcher; the user explicitly accepted a CPL stub
+while keeping all settings in WELCOME95.EXE. An embedded x86 CPL supplies a
+stock Win95 icon, name/description and quoted adjacent-EXE launch only after a
+double click. Enable registers it from LOGON using the standard machine Cpls
+value; ownership/path/size/hash are recorded privately. New files are reserved
+exclusively, and updates keep a loaded old module rather than overwrite it.
+GETCOUNT advertises only the currently registered module.
+
+A failed first Enable removes its fresh item/module; failed reapplication
+restores the previous item. Disable leaves the icon as an accessible route to
+reenabling and cannot be blocked by foreign applet changes. Unknown values and
+modified registered images remain protected. The failure fixture found that
+GetTempFileName may emit fewer than 4 hex digits; new CPL names are generated
+canonically before CREATE_NEW. Interrupted tests also use unique tick/PID keys
+so one failed run cannot contaminate the next.
+
+Validation: 465 checks per resolution under Wine64/Xvfb in the standard three
+modes, including 58 session, 25 applet and 64 startup checks. Tests cover a
+deterministic single profile from private HKCU/INI, native submit counts in a
+separate provider, real DLL loading/metadata/launch callback, first-install
+rollback, disabled-state access, foreign values and concurrent loaded versions.
+Main/boot/CPL PE audits pass (174/51/15 imports), production CPL exports only
+CPlApplet, and both helpers are embedded in the rebuilt tracked EXE.
+
+- [ ] On Win95: cold startup still enters one passwordless account; logoff waits
+      on even one card and manual arrow works. Repeat cancellation/logoff twice.
+- [ ] Check the actual native Control Panel item, double-click, disabled-state
+      access, reopen/refresh and reenable after the ordinary update/reboot flow.
+Wine uses inert/private fixtures; native Win95 shell enumeration is not claimed.

@@ -18,3 +18,5 @@ __pycache__/
 /startup-test.log
 /session-test.log
 /ui-test.log
+
+/control-panel-test.log

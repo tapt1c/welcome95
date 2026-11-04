@@ -1,11 +1,17 @@
 /* Real cross-process gates, inert shell, private registry/INI; no OS logoff. */
+#include "../src/profiles.c"
+static BOOL single_profile_fixture;
+static void fixture_profiles_load(void);
+#define profiles_load fixture_profiles_load
 #include "../src/welcome95.c"
+#undef profiles_load
 #include "../src/bootstrap.h"
 static HANDLE output;
 static int failures,positions;
 static DWORD canvas_destroyed_at;
 static WNDPROC original_password_proc;
 static DWORD password_paints;
+static DWORD provider_submits;
 static WNDPROC system_provider_proc;
 static LRESULT CALLBACK legacy_provider_frame(HWND window,UINT message,WPARAM wp,LPARAM lp)
 {
@@ -25,6 +31,14 @@ static LRESULT CALLBACK count_password_paints(HWND window,UINT message,WPARAM wp
 static char fixture_root[128],fixture_dir[MAX_PATH],fixture_ini[MAX_PATH],fixture_exe[MAX_PATH],source_dir[MAX_PATH];
 static const BYTE test_boot[32]={'M','Z',1,2,3};
 static char service_key[160],run_key[160],once_key[160],backup_key[160],marker[MAX_PATH];
+static void fixture_profiles_load(void)
+{
+    if(single_profile_fixture) {
+        char key[160];
+        wsprintfA(key,"%s\\Profiles",fixture_root);
+        load_sources(HKEY_CURRENT_USER,key,fixture_ini); profiles_remember("First");
+    } else profiles_load();
+}
 static void check(BOOL okay,const char *text)
 {
     DWORD written;
@@ -117,7 +131,13 @@ static INT_PTR CALLBACK provider_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp
         SelectObject(dc,old); ReleaseDC(field,dc);
         SetWindowLongPtrA(hwnd,DWLP_MSGRESULT,height); return TRUE;
     }
-    if(message==WM_COMMAND) return TRUE; /* Inert: a click never proves logon. */
+    if(message==WM_USER+44) {
+        SetWindowLongPtrA(hwnd,DWLP_MSGRESULT,provider_submits); return TRUE;
+    }
+    if(message==WM_COMMAND) {
+        if(LOWORD(wp)==IDOK) ++provider_submits;
+        return TRUE; /* Inert: a click never proves logon. */
+    }
     if(message==WM_CLOSE) { DestroyWindow(hwnd); return TRUE; }
     if(message==WM_DESTROY) PostQuitMessage(0);
     return FALSE;
@@ -255,7 +275,13 @@ void session_test_entry(void)
     stop_event=CreateEventA(NULL,TRUE,FALSE,STOP_EVENT);
     ResetEvent(ready_event); ResetEvent(closed_event); ResetEvent(logoff_event); ResetEvent(ended_event); ResetEvent(stop_event);
     controller=CreateWindowA("Welcome95.Controller","Test controller",WS_OVERLAPPED,0,0,0,0,NULL,NULL,instance,NULL); KillTimer(controller,TICK);
+    single_profile_fixture=TRUE;
     begin_logon_cycle(FALSE); KillTimer(screen,TICK); SetEvent(controller_event);
+    check(profiles_count()==1 && status_view==VIEW_STARTING && !require_account_choice && !automatic_attempted,
+        "a fresh controller still permits its initial one-account quiet startup");
+    SendMessageA(controller,WM_ENDSESSION,FALSE,(LPARAM)ENDSESSION_LOGOFF_95);
+    check(!require_account_choice && status_view==VIEW_STARTING,
+        "a cancelled initial logoff does not consume startup automatic-login eligibility");
     startup_worker=worker("/boot-startup"); shell_worker=worker("/boot-shell");
     check(startup_worker && shell_worker,"start real, separate startup and shell gate processes");
     start=GetTickCount();
@@ -296,7 +322,10 @@ void session_test_entry(void)
     automatic_attempted=TRUE; pending_profile=TRUE;
     SendMessageA(controller,WM_TIMER,TICK,0); KillTimer(screen,TICK);
     check(IsWindow(controller) && screen && status_view==VIEW_LOGIN && !session_running,"committed logoff creates another welcome without exiting the controller");
-    check(!finishing && !automatic_attempted && !pending_profile && selected_profile==0,"new logon resets per-session authentication and selection state");
+    check(!finishing && automatic_attempted && require_account_choice && !pending_profile && selected_profile==0,
+        "new logon resets in-flight state and selection while requiring manual account choice");
+    check(profiles_count()==1 && !account_open() && !IsWindowVisible(GetDlgItem(screen,ID_SUBMIT)),
+        "even one account is collapsed after logoff and cannot submit before selection");
     check(WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
         "new logon clears the previous session's readiness and close acknowledgements");
     old_screen=screen; SetEvent(logoff_event); SendMessageA(controller,WM_TIMER,TICK,0);
@@ -313,6 +342,8 @@ void session_test_entry(void)
     while(!screen && (DWORD)(GetTickCount()-start)<5000) pump(10);
     if(screen) KillTimer(screen,TICK);
     check(screen && IsWindow(screen) && !awaiting_logon,"a new OS startup gate also restores welcome after a reasonless session end");
+    check(require_account_choice && automatic_attempted && !account_open() && status_view==VIEW_LOGIN,
+        "the ready-event fallback after an ambiguous session end cannot rearm automatic login");
     check(WaitForSingleObject(startup_worker,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
         "creating a new canvas never acknowledges its own startup gate prematurely");
     SendMessageA(screen,WM_TIMER,TICK,0); finish_time=GetTickCount()-1001; SendMessageA(screen,WM_TIMER,TICK,0);
@@ -325,11 +356,27 @@ void session_test_entry(void)
     SendMessageA(controller,WM_TIMER,TICK,0); if(screen) KillTimer(screen,TICK);
     check(provider && screen && status_view==VIEW_LOGIN && !finishing && WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT,
         "a separate provider's new password dialog restores login without inventing session readiness");
-    allow_logon();
+    {
+        DWORD_PTR submits=0;
+        allow_logon(); SendMessageA(screen,WM_TIMER,TICK,0); pump(60);
+        check(!native_logon_attached() && !account_open() &&
+            SendMessageTimeoutA(provider,WM_USER+44,0,0,SMTO_ABORTIFHUNG,200,&submits) && !submits,
+            "a repeated one-account login sends no native submit while waiting for a card click");
+        SendMessageA(screen,WM_LBUTTONDOWN,0,MAKELPARAM(card_x(440),row_y(profile_top(0)+10)));
+        SendMessageA(screen,WM_TIMER,TICK,0); pump(60);
+        check(account_open() && !pending_profile && native_logon_attached() && require_account_choice &&
+            SendMessageTimeoutA(provider,WM_USER+44,0,0,SMTO_ABORTIFHUNG,200,&submits) && !submits,
+            "clicking the sole account exposes real input without triggering automatic authentication");
+        SendMessageA(screen,WM_COMMAND,MAKEWPARAM(ID_SUBMIT,BN_CLICKED),(LPARAM)GetDlgItem(screen,ID_SUBMIT)); pump(60);
+        check(SendMessageTimeoutA(provider,WM_USER+44,0,0,SMTO_ABORTIFHUNG,200,&submits) && submits==1 &&
+            !finishing && WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT,
+            "an explicit submit still reaches Windows once and does not fabricate session readiness");
+    }
     check(native_logon_attached() && login_window==provider,
         "the repeated login attaches real controls owned by a separate synthetic provider process");
     {
         RECT original,after; LONG style; DWORD_PTR modified=0;
+        require_account_choice=FALSE; /* A separate fresh-controller startup fixture. */
         native_logon_restore(FALSE); GetWindowRect(provider,&original); style=GetWindowLongA(provider,GWL_STYLE);
         profiles_remember("First"); pending_profile=FALSE; automatic_attempted=FALSE;
         single_submitted=FALSE; single_started=GetTickCount();
@@ -354,6 +401,7 @@ void session_test_entry(void)
         allow_logon();
         check(native_logon_attached() && native_logon_layout(card_x(501),row_y(profile_top(selected_profile)+52),227),
             "cancelled shutdown during a quiet probe still embeds a real manual password field");
+        require_account_choice=TRUE;
     }
     {
         HWND field=GetDlgItem(provider,23); POINT hit; RECT rectangle; DWORD_PTR reply=0;

@@ -5,7 +5,7 @@ import struct
 import sys
 
 
-def check(path, bootstrap=False):
+def check(path, bootstrap=False, panel=False):
     data = pathlib.Path(path).read_bytes()
 
     def u16(offset):
@@ -48,7 +48,7 @@ def check(path, bootstrap=False):
         'ADVAPI32.dll': set('RegFlushKey RegEnumKeyA RegCloseKey RegCreateKeyExA RegDeleteValueA RegOpenKeyExA RegQueryValueExA RegSetValueExA'.split()),
         'GDI32.dll': set('GetRgnBox SaveDC RestoreDC Arc GetDIBits SetDIBits GetStockObject SetBkColor MoveToEx LineTo StretchDIBits SetStretchBltMode SetBrushOrgEx CreateCompatibleBitmap BitBlt AddFontResourceA RemoveFontResourceA GetDeviceCaps CreatePen RoundRect CreateCompatibleDC DeleteDC GetObjectA StretchBlt CombineRgn CreateRectRgn CreateFontA CreateSolidBrush DeleteObject SelectObject SetBkMode SetTextColor'.split()),
         'KERNEL32.dll': set('CopyFileA ReadFile GetExitCodeProcess SetEndOfFile FlushFileBuffers MoveFileA ResetEvent OpenProcess GetPrivateProfileStringA WritePrivateProfileStringA GetProcessHeap HeapAlloc HeapFree GetSystemDirectoryA GetWindowsDirectoryA GetShortPathNameA GetProcAddress LoadLibraryA FreeLibrary lstrcatA GetStringTypeA GetFileAttributesA FindFirstFileA FindClose ExpandEnvironmentStringsA GetTempPathA GetTempFileNameA DeleteFileA CreateDirectoryA RemoveDirectoryA FindResourceA SizeofResource LoadResource LockResource GetACP GetSystemDefaultLangID CreateFileA WriteFile SetFilePointer lstrcpyA GetPrivateProfileSectionA lstrcpynA MulDiv CloseHandle CreateEventA CreateProcessA ExitProcess GetCommandLineA GetCurrentProcessId GetLastError GetModuleFileNameA GetModuleHandleA GetTickCount GetVersion OpenEventA SetEvent SetLastError Sleep WaitForSingleObject lstrcmpA lstrcmpiA lstrlenA'.split()),
-        'USER32.dll': set('WindowFromPoint RedrawWindow EqualRect MsgWaitForMultipleObjects PeekMessageA BeginDeferWindowPos DeferWindowPos EndDeferWindowPos GetTopWindow SetScrollInfo DrawEdge DrawFocusRect GetFocus GetForegroundWindow GetWindow GetWindowTextA GetDlgCtrlID SetFocus ScreenToClient InflateRect IsChild OemToCharA GetDC ReleaseDC FindWindowA OffsetRect LoadBitmapA ExitWindowsEx BeginPaint ClientToScreen CreateWindowExA DefWindowProcA DestroyWindow DispatchMessageA DrawTextA EnableWindow EndPaint EnumChildWindows EnumWindows FillRect GetClassNameA GetClientRect GetDlgItem GetLastActivePopup GetMessageA GetParent GetSystemMetrics GetWindowLongA GetWindowRect GetWindowRgn GetWindowThreadProcessId InvalidateRect IsDialogMessageA IsWindow IsWindowEnabled IsWindowVisible KillTimer LoadCursorA MapWindowPoints MessageBoxA PostMessageA PostQuitMessage RegisterClassA RegisterHotKey SendDlgItemMessageA SendMessageA SendMessageTimeoutA SetDlgItemTextA SetForegroundWindow SetRect SetTimer SetWindowLongA SetWindowPos SetWindowRgn ShowWindow TranslateMessage UnregisterHotKey UpdateWindow wsprintfA'.split()),
+        'USER32.dll': set('LoadIconA WindowFromPoint RedrawWindow EqualRect MsgWaitForMultipleObjects PeekMessageA BeginDeferWindowPos DeferWindowPos EndDeferWindowPos GetTopWindow SetScrollInfo DrawEdge DrawFocusRect GetFocus GetForegroundWindow GetWindow GetWindowTextA GetDlgCtrlID SetFocus ScreenToClient InflateRect IsChild OemToCharA GetDC ReleaseDC FindWindowA OffsetRect LoadBitmapA ExitWindowsEx BeginPaint ClientToScreen CreateWindowExA DefWindowProcA DestroyWindow DispatchMessageA DrawTextA EnableWindow EndPaint EnumChildWindows EnumWindows FillRect GetClassNameA GetClientRect GetDlgItem GetLastActivePopup GetMessageA GetParent GetSystemMetrics GetWindowLongA GetWindowRect GetWindowRgn GetWindowThreadProcessId InvalidateRect IsDialogMessageA IsWindow IsWindowEnabled IsWindowVisible KillTimer LoadCursorA MapWindowPoints MessageBoxA PostMessageA PostQuitMessage RegisterClassA RegisterHotKey SendDlgItemMessageA SendMessageA SendMessageTimeoutA SetDlgItemTextA SetForegroundWindow SetRect SetTimer SetWindowLongA SetWindowPos SetWindowRgn ShowWindow TranslateMessage UnregisterHotKey UpdateWindow wsprintfA'.split()),
     }
     allowed['SHELL32.dll']={'ShellExecuteExA'}
     imports = {}
@@ -69,7 +69,14 @@ def check(path, bootstrap=False):
             thunk += 4
         imports[name] = functions
         descriptor += 20
-    require(set(imports) == (set(allowed) - {'GDI32.dll', 'SHELL32.dll'} if bootstrap else set(allowed)), 'Unexpected or missing system DLLs')
+    require(set(imports) == (set(allowed) - {'GDI32.dll', 'SHELL32.dll'} if bootstrap or panel else set(allowed)), 'Unexpected or missing system DLLs')
+    if panel:
+        require(u16(pe + 22) & 0x2000, 'Control Panel launcher must be a DLL')
+        export = offset(u32(optional + 96))
+        count = u32(export + 24)
+        names = offset(u32(export + 32))
+        exports = {string(offset(u32(names + index * 4))) for index in range(count)}
+        require(exports == {'CPlApplet'}, f'Unexpected applet exports: {exports}')
     require(u32(optional + 96 + 9 * 8) == 0, 'Unexpected TLS/CRT initialization')
     require(u32(optional + 96 + 14 * 8) == 0, '.NET is not supported')
     print(f'PASS: {path}: x86 GUI, Windows 4.0, {len(imports)} system DLLs, '
@@ -78,6 +85,6 @@ def check(path, bootstrap=False):
 
 if __name__ == '__main__':
     try:
-        check(sys.argv[1] if len(sys.argv) > 1 else 'build/welcome95.exe', '--bootstrap' in sys.argv[2:])
+        check(sys.argv[1] if len(sys.argv) > 1 else 'build/welcome95.exe', '--bootstrap' in sys.argv[2:], '--panel' in sys.argv[2:])
     except (ValueError, OSError, struct.error, IndexError) as error:
         sys.exit(f'FAIL: {error}')

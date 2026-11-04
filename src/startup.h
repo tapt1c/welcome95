@@ -23,4 +23,5 @@ BOOL startup_installed(const StartupConfig *config);
 DWORD startup_original(const StartupConfig *config,char *command,DWORD capacity);
 DWORD startup_rearm(const StartupConfig *config);
 void startup_trace(HKEY root,const char *backup_key,const char *stage,DWORD code);
+void startup_trace_executable(const char *executable,const char *stage,DWORD code);
 #endif

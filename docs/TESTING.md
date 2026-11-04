@@ -460,3 +460,39 @@ manually overwrite foreign registry/file values. No target Enable has been
 executed in the cloud; the original screenshot identifies no exact failing API.
 
 API contract source: https://github.com/MicrosoftDocs/sdk-api/blob/docs/sdk-api-src/content/winreg/nf-winreg-regflushkey.md
+
+## Logoff selection and native Control Panel entry
+
+Current suite: 465 checks per resolution: 58 session, 25 Control Panel and 64
+startup checks among the existing suites. Standard modes: 640×480×16, 800×600×24
+and 1024×768×24. Production main/boot/CPL audits remain i386/PE4.0/no CRT/TLS.
+The CPL exports only CPlApplet; its test binding export exists only in the
+64-bit fixture.
+
+Session tests load exactly one profile from private HKCU/INI, retain cold
+startup and cancellation behavior, and assert closed cards after logoff and
+reasonless session recovery. The separate native provider counts commands:
+no OK before selection, no automatic OK after selection, exactly one OK after
+an explicit submit. The existing real mouse/keyboard/mask-pixel and rescue
+checks still run. Real OS authentication/logoff are not performed.
+
+Applet tests use private Cpls/Entry records and load the actual 64-bit CPL.
+They validate metadata/icon/export and capture a quoted managed-EXE launch
+without creating the real process. They exercise first-install failure cleanup,
+loaded-module reuse/update, registration rollback, settings access after Disable,
+foreign registration and altered ownership/hash. No host Control Panel values
+or actual boot configuration are changed.
+
+Target VM checks:
+
+1. Cold boot, one passwordless account: original quiet auto-login remains.
+2. Logoff: list waits for selection even with one account; field/arrow appear
+   only after selection, no blank attempt is posted automatically. Sign in
+   explicitly and repeat. Verify logoff cancellation and VGA/larger layouts.
+3. Enable: open Control Panel and find Welcome95; double-click opens the managed
+   EXE settings. Reopen/refresh an already open Control Panel if needed.
+4. Disable from that window; the icon should still open Settings for reenabling.
+5. Update with Control Panel open: the new registration must coexist safely
+   with the old loaded module. Retain original shell/backups and reboot normally.
+Native Control Panel enumeration and real Win95 authentication need target
+confirmation beyond these Wine fixtures.
