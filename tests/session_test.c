@@ -3,12 +3,22 @@
 static BOOL single_profile_fixture;
 static void fixture_profiles_load(void);
 #define profiles_load fixture_profiles_load
+static BOOL WINAPI session_set_event(HANDLE event);
+#define SetEvent session_set_event
 #include "../src/welcome95.c"
+#undef SetEvent
 #undef profiles_load
 #include "../src/bootstrap.h"
 static HANDLE output;
 static int failures,positions;
 static DWORD canvas_destroyed_at;
+static BOOL consume_creation_damage, visible_during_creation;
+static DWORD premature_paints,closed_publications;
+static BOOL WINAPI session_set_event(HANDLE event)
+{
+    if(event && event==closed_event) ++closed_publications;
+    return SetEvent(event);
+}
 static WNDPROC original_password_proc;
 static DWORD password_paints;
 static DWORD provider_submits;
@@ -47,6 +57,17 @@ static void check(BOOL okay,const char *text)
     WriteFile(output,prefix,(DWORD)lstrlenA(prefix),&written,NULL);
     WriteFile(output,text,(DWORD)lstrlenA(text),&written,NULL); WriteFile(output,"\r\n",2,&written,NULL);
 }
+/* A 16-bit display quantizes each channel by up to eight levels. */
+static BOOL pixel_near(COLORREF actual,COLORREF expected)
+{
+    int channel,difference;
+    if(actual==CLR_INVALID) return FALSE;
+    for(channel=0;channel<3;++channel) {
+        difference=(int)((actual>>(channel*8))&255)-(int)((expected>>(channel*8))&255);
+        if(difference < -8 || difference > 8) return FALSE;
+    }
+    return TRUE;
+}
 static void pump(DWORD milliseconds)
 {
     DWORD start=GetTickCount(); MSG message;
@@ -59,6 +80,20 @@ static LRESULT CALLBACK counted_screen(HWND hwnd,UINT message,WPARAM wp,LPARAM l
 {
     if(message==WM_WINDOWPOSCHANGING) ++positions;
     if(message==WM_DESTROY) canvas_destroyed_at=GetTickCount();
+    if(consume_creation_damage && message==WM_CREATE) {
+        LRESULT result;
+        visible_during_creation=(GetWindowLongA(hwnd,GWL_STYLE)&WS_VISIBLE)!=0;
+        result=welcome_proc(hwnd,message,wp,lp);
+        /* Model Win9x consuming construction-time damage before first display. */
+        ValidateRect(hwnd,NULL);
+        return result;
+    }
+    if(consume_creation_damage && message==WM_WINDOWPOSCHANGED) {
+        LRESULT result=welcome_proc(hwnd,message,wp,lp);
+        if(IsWindowVisible(hwnd)) ValidateRect(hwnd,NULL);
+        return result;
+    }
+    if(consume_creation_damage && message==WM_PAINT && screen!=hwnd && IsWindowVisible(hwnd)) ++premature_paints;
     return welcome_proc(hwnd,message,wp,lp);
 }
 static LRESULT CALLBACK white_input(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
@@ -176,7 +211,7 @@ void session_test_entry(void)
     WNDCLASSA cls;
     HWND competitor,foreground,old_screen,notifier,provider,notice;
     HANDLE startup_worker,shell_worker,notifier_worker,notifier_ready,file,provider_worker;
-    DWORD start,written,launched,closed_at;
+    DWORD start,written,launched,closed_at,publications_before;
     HDC dc; COLORREF pixel;
     int i,x,y,width;
 
@@ -320,8 +355,34 @@ void session_test_entry(void)
     check(finished(notifier_worker,5000) && WaitForSingleObject(logoff_event,0)==WAIT_OBJECT_0,"the normal notifier exits and signals committed logoff to the persistent process");
     CloseHandle(notifier_worker); CloseHandle(notifier_ready);
     automatic_attempted=TRUE; pending_profile=TRUE;
-    SendMessageA(controller,WM_TIMER,TICK,0); KillTimer(screen,TICK);
-    check(IsWindow(controller) && screen && status_view==VIEW_LOGIN && !session_running,"committed logoff creates another welcome without exiting the controller");
+    publications_before=closed_publications;
+    SendMessageA(controller,WM_TIMER,TICK,0);
+    check(IsWindow(controller) && !screen && awaiting_logon && !body_font && !session_running,
+        "committed logoff retires session GDI resources without creating children during desktop teardown");
+    for(i=0;i<5;++i) SendMessageA(controller,WM_TIMER,TICK,0);
+    check(!screen && awaiting_logon && closed_publications==publications_before &&
+        WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+        "without a new provider or OS handshake logoff stays idle and never publishes a close acknowledgement");
+    competitor=CreateWindowA("Welcome95.WhiteInput","Teardown background",WS_POPUP|WS_VISIBLE,
+        0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),NULL,NULL,instance,NULL);
+    UpdateWindow(competitor);
+    consume_creation_damage=TRUE; visible_during_creation=FALSE; premature_paints=0;
+    provider_worker=worker("/provider"); provider=NULL; start=GetTickCount();
+    while((!provider || !IsWindowVisible(provider)) && (DWORD)(GetTickCount()-start)<5000) {
+        pump(10); provider=FindWindowA("#32770","Welcome95 synthetic provider");
+    }
+    SendMessageA(controller,WM_TIMER,TICK,0); if(screen) KillTimer(screen,TICK);
+    check(provider && screen && status_view==VIEW_LOGIN && !awaiting_logon && !session_running,
+        "a new real provider triggers the next login canvas without exiting the controller");
+    check(!visible_during_creation && !premature_paints && IsWindowVisible(screen),
+        "canvas construction stays hidden and first visible painting has its published window handle");
+    dc=GetDC(screen); i=(GetSystemMetrics(SM_CXSCREEN)-10)*128/GetSystemMetrics(SM_CXSCREEN);
+    check(pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,10),RGB(0,48,156)) &&
+        pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,200),RGB(90,126,220)) &&
+        pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,GetSystemMetrics(SM_CYSCREEN)-5),
+            RGB(57-i*57/127,52-i*4/127,173-i*17/127)),
+        "full top middle and footer pixels appear immediately despite consumed creation damage");
+    ReleaseDC(screen,dc); consume_creation_damage=FALSE; DestroyWindow(competitor);
     check(!finishing && automatic_attempted && require_account_choice && !pending_profile && selected_profile==0,
         "new logon resets in-flight state and selection while requiring manual account choice");
     check(profiles_count()==1 && !account_open() && !IsWindowVisible(GetDlgItem(screen,ID_SUBMIT)),
@@ -335,7 +396,13 @@ void session_test_entry(void)
     SendMessageA(screen,WM_QUERYENDSESSION,0,0);
     SendMessageA(screen,WM_ENDSESSION,FALSE,0);
     check(screen==old_screen && status_view==VIEW_LOGIN,"cancelled shutdown during login preserves the resident login canvas");
+    PostMessageA(provider,WM_CLOSE,0,0);
+    check(finished(provider_worker,5000),"the first inert provider closes before reasonless-session recovery");
+    CloseHandle(provider_worker);
+    publications_before=closed_publications;
     SendMessageA(controller,WM_ENDSESSION,TRUE,0); SendMessageA(controller,WM_TIMER,TICK,0);
+    check(closed_publications==publications_before && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+        "retiring a visible canvas never briefly publishes a shell handoff acknowledgement");
     check(IsWindow(controller) && !screen && awaiting_logon && !body_font,
         "ambiguous session end keeps the controller and releases temporary font resources");
     startup_worker=worker("/gate-startup"); start=GetTickCount();

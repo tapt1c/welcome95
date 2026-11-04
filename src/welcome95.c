@@ -65,7 +65,7 @@ typedef DWORD (WINAPI *RegisterService)(DWORD,DWORD);
 static RegisterService register_service;
 static StartupConfig startup_config;
 static PanelConfig panel_config;
-static char system_ini[MAX_PATH],boot_directory[MAX_PATH];
+static char system_ini[MAX_PATH],control_ini[MAX_PATH],boot_directory[MAX_PATH];
 static BOOL rescue_mode;
 static BOOL preview, finishing;
 static DWORD finish_time;
@@ -178,6 +178,9 @@ static void initialize_startup(void)
     startup_config.once_key=STARTUP_ONCE; startup_config.backup_key=STARTUP_BACKUP;
     startup_config.executable=exe_path; startup_config.ini=system_ini;
     startup_config.write_ini=WritePrivateProfileStringA;
+    lstrcpynA(control_ini,system_ini,sizeof(control_ini));
+    if(control_ini[0]) lstrcpyA(control_ini+length+1,"CONTROL.INI");
+    panel_config.control_ini=control_ini; panel_config.write_ini=WritePrivateProfileStringA;
     panel_config.root=HKEY_LOCAL_MACHINE; panel_config.cpls_key=PANEL_CPLS;
     panel_config.storage_key=PANEL_STORAGE; panel_config.executable=exe_path;
     {
@@ -1025,6 +1028,38 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     return DefWindowProcA(hwnd, message, wp, lp);
 }
 
+/* Build children while hidden. Win9x may consume the initial update region
+   during creation/session teardown; UpdateWindow alone cannot request it again.
+   Publish screen before showing, then explicitly paint the entire composition. */
+static HWND create_canvas(void)
+{
+    screen=CreateWindowExA(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,"Welcome95.Screen",APP,
+        WS_POPUP|WS_CLIPCHILDREN,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
+        NULL,NULL,instance,NULL);
+    if(screen) {
+        ShowWindow(screen,SW_SHOWNOACTIVATE);
+        RedrawWindow(screen,NULL,NULL,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+    }
+    return screen;
+}
+
+/* A committed end notification precedes completion of Win9x desktop teardown.
+   Keep the service, but create no new canvas/children until a new native form
+   or a real startup handshake establishes the next session. */
+static void await_logon_cycle(void)
+{
+    require_account_choice=TRUE;
+    ResetEvent(ready_event); ResetEvent(closed_event);
+    /* Retiring the old session is not an authenticated shell handoff. */
+    if(screen && IsWindow(screen)) DestroyWindow(screen);
+    release_ui_fonts();
+    startup_trace(startup_config.root,startup_config.backup_key,"canvas-retired",0);
+    session_running=FALSE; awaiting_logon=TRUE; finishing=FALSE;
+    if(shell_process) CloseHandle(shell_process);
+    shell_process=NULL;
+    if(enabled()) startup_rearm(&startup_config);
+}
+
 static void begin_logon_cycle(BOOL reset)
 {
     if(reset) require_account_choice=TRUE;
@@ -1043,11 +1078,7 @@ static void begin_logon_cycle(BOOL reset)
     single_submitted=FALSE; single_started=GetTickCount();
     if(!preview && !require_account_choice && profiles_count()==1) status_view=VIEW_STARTING;
     if(!body_font) { bundled_fonts_load(instance); create_ui_fonts(); }
-    screen=CreateWindowExA(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,"Welcome95.Screen",APP,
-        WS_POPUP|WS_VISIBLE|WS_CLIPCHILDREN,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
-        NULL,NULL,instance,NULL);
-    if(screen) UpdateWindow(screen);
-    else { if(stop_event) SetEvent(stop_event); if(closed_event) SetEvent(closed_event); }
+    if(!create_canvas()) { if(stop_event) SetEvent(stop_event); if(closed_event) SetEvent(closed_event); }
     if(enabled()) startup_rearm(&startup_config);
 }
 static void rescue_native_logon(void)
@@ -1102,10 +1133,7 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
            (resident_mode || !FindWindowA("Welcome95.Controller",NULL))) {
             if(!body_font) { bundled_fonts_load(instance); create_ui_fonts(); }
             status_view=VIEW_SHUTDOWN; shutdown_only_canvas=TRUE; ending_unknown=!power_requested;
-            screen=CreateWindowExA(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,"Welcome95.Screen",APP,
-                WS_POPUP|WS_VISIBLE|WS_CLIPCHILDREN,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
-                NULL,NULL,instance,NULL);
-            if(screen) UpdateWindow(screen);
+            create_canvas();
         }
         return TRUE;
     case WM_ENDSESSION:
@@ -1129,16 +1157,10 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             if(WaitForSingleObject(logoff_event,0)==WAIT_OBJECT_0) {
                 require_account_choice=TRUE;
                 ResetEvent(logoff_event);
-                if(session_running || awaiting_logon) begin_logon_cycle(TRUE);
+                if(session_running || awaiting_logon) await_logon_cycle();
             } else if(ended_event && WaitForSingleObject(ended_event,0)==WAIT_OBJECT_0) {
-                require_account_choice=TRUE;
                 ResetEvent(ended_event);
-                close_canvas(); release_ui_fonts();
-                ResetEvent(ready_event); ResetEvent(closed_event);
-                session_running=FALSE; awaiting_logon=TRUE; finishing=FALSE;
-                if(shell_process) CloseHandle(shell_process);
-                shell_process=NULL;
-                if(enabled()) startup_rearm(&startup_config);
+                await_logon_cycle();
             } else if(awaiting_logon) {
                 HWND found=NULL;
                 EnumWindows(find_logon,(LPARAM)&found);
@@ -1346,10 +1368,7 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
             if(screen) SetEvent(controller_event);
         }
     } else if (welcome || preview) {
-        window = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, cls.lpszClassName, APP,
-            WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
-            NULL, NULL, instance, NULL);
-        screen = window;
+        window = create_canvas();
     } else {
         window = CreateWindowA(cls.lpszClassName, ui_text("\315\340\361\362\360\356\351\352\350 Welcome95","Welcome95 settings"), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
             CW_USEDEFAULT, CW_USEDEFAULT, SETTINGS_WIDTH, SETTINGS_HEIGHT, NULL, NULL, instance, NULL);

@@ -47,6 +47,36 @@ static DWORD write_value(const PanelConfig *c,BOOL record,const void *data,DWORD
     if(!error) error=RegFlushKey(key);
     RegCloseKey(key); return note(c,record ? "panel-record-write" : "panel-registration-write",error);
 }
+/* Win9x's legacy discovery route keeps the applet itself under LOGON. */
+static DWORD read_ini(const PanelConfig *c,char *entry,BOOL *present)
+{
+    DWORD length;
+    *present=FALSE;
+    if(!c->control_ini || !*c->control_ini || !c->write_ini)
+        return note(c,"panel-ini-path",ERROR_INVALID_PARAMETER);
+    length=GetPrivateProfileStringA("MMCPL",PANEL_VALUE,"\001",entry,MAX_PATH,c->control_ini);
+    if(length>=MAX_PATH-1) return note(c,"panel-ini-data",ERROR_MORE_DATA);
+    *present=!(length==1 && entry[0]==1);
+    return 0;
+}
+static DWORD write_ini(const PanelConfig *c,const char *entry)
+{
+    char actual[MAX_PATH]; BOOL present; DWORD error;
+    SetLastError(0);
+    if(!c->write_ini("MMCPL",PANEL_VALUE,entry,c->control_ini)) {
+        error=GetLastError(); return note(c,"panel-ini-write",error ? error : ERROR_WRITE_FAULT);
+    }
+    /* A cache flush may return zero on success. Only a reported error is
+       fatal; always verify the resulting entry instead of trusting the BOOL. */
+    SetLastError(0);
+    if(!c->write_ini(NULL,NULL,NULL,c->control_ini)) {
+        error=GetLastError(); if(error) return note(c,"panel-ini-flush",error);
+    }
+    error=read_ini(c,actual,&present); if(error) return error;
+    if(entry ? (!present || lstrcmpA(actual,entry)) : present)
+        return note(c,"panel-ini-verify",ERROR_WRITE_FAULT);
+    return 0;
+}
 static DWORD checksum(const BYTE *data,DWORD size)
 {
     DWORD hash=2166136261UL,index;
@@ -120,20 +150,25 @@ static DWORD create_module(const PanelConfig *c,PanelRecord *record,char *create
 }
 DWORD panel_rollback(const PanelConfig *c,PanelChange *change)
 {
-    PanelRecord current; char entry[MAX_PATH]; BOOL record_present,entry_present;
+    PanelRecord current; char entry[MAX_PATH],ini[MAX_PATH]; BOOL record_present,entry_present,ini_present;
     DWORD error,part;
     if(!change->applied) return 0;
     error=read_value(c,TRUE,&current,sizeof(current),&record_present);
     if(!error) error=read_value(c,FALSE,entry,sizeof(entry),&entry_present);
+    if(!error) error=read_ini(c,ini,&ini_present);
     if(error) return error;
     if(record_present && !valid_record(&current)) return note(c,"panel-rollback-data",ERROR_INVALID_DATA);
     if(record_present && !same_record(&current,&change->expected) &&
         (!change->record_present || !same_record(&current,&change->old_record))) return note(c,"panel-rollback-owner",ERROR_BUSY);
     if(entry_present && !same_path(entry,change->expected.module) &&
         (!change->entry_present || !same_path(entry,change->old_entry))) return note(c,"panel-rollback-entry",ERROR_BUSY);
+    if(ini_present && !same_path(ini,change->expected.module) &&
+        (!change->ini_present || !same_path(ini,change->old_ini))) return note(c,"panel-rollback-ini-owner",ERROR_BUSY);
     error=write_value(c,TRUE,change->record_present ? &change->old_record : NULL,sizeof(change->old_record));
     part=write_value(c,FALSE,change->entry_present ? change->old_entry : NULL,
         change->entry_present ? (DWORD)lstrlenA(change->old_entry)+1 : 0);
+    if(!error) error=part;
+    part=write_ini(c,change->ini_present ? change->old_ini : NULL);
     if(!error) error=part;
     if(!error) {
         change->applied=FALSE;
@@ -148,11 +183,14 @@ DWORD panel_configure(const PanelConfig *c,BOOL enable,PanelChange *change)
     clear_bytes(change,sizeof(*change)); failure="panel-validation";
     error=read_value(c,TRUE,&change->old_record,sizeof(change->old_record),&change->record_present);
     if(!error) error=read_value(c,FALSE,change->old_entry,sizeof(change->old_entry),&change->entry_present);
+    if(!error) error=read_ini(c,change->old_ini,&change->ini_present);
     if(error) return error;
     if(change->record_present && (!valid_record(&change->old_record) ||
         !same_path(change->old_record.owner,c->executable))) return note(c,"panel-owner",ERROR_BUSY);
     if(change->entry_present && (!change->record_present ||
         !same_path(change->old_entry,change->old_record.module))) return note(c,"panel-registration-owner",ERROR_BUSY);
+    if(change->ini_present && (!change->record_present ||
+        !same_path(change->old_ini,change->old_record.module))) return note(c,"panel-ini-owner",ERROR_BUSY);
     change->enabled=enable;
     if(enable) {
         if(!c->image || !c->size || c->size>1024*1024) return note(c,"panel-resource",ERROR_RESOURCE_DATA_NOT_FOUND);
@@ -169,9 +207,11 @@ DWORD panel_configure(const PanelConfig *c,BOOL enable,PanelChange *change)
         change->expected=next; change->applied=TRUE;
         error=write_value(c,TRUE,&next,sizeof(next));
         if(!error) error=write_value(c,FALSE,next.module,(DWORD)lstrlenA(next.module)+1);
+        if(!error) error=write_ini(c,next.module);
     } else {
         change->expected=change->old_record; change->applied=TRUE;
         error=write_value(c,FALSE,NULL,0);
+        if(!error) error=write_ini(c,NULL);
     }
     if(!error) return 0;
     saved_failure=failure; rollback=panel_rollback(c,change); failure=saved_failure;

@@ -3,7 +3,7 @@
 #include <cpl.h>
 #include "../src/control_panel.h"
 static HANDLE output;
-static int failures,launches,fail_shell;
+static int failures,launches,fail_shell,fail_panel_write,fail_panel_flush,drop_panel_write,zero_panel_flush;
 static char launched_app[MAX_PATH],launched_command[MAX_PATH+4];
 typedef BOOL (WINAPI *Launch)(LPCSTR,LPSTR,LPSECURITY_ATTRIBUTES,LPSECURITY_ATTRIBUTES,BOOL,DWORD,LPVOID,LPCSTR,LPSTARTUPINFOA,LPPROCESS_INFORMATION);
 typedef LONG (CALLBACK *Applet)(HWND,UINT,LPARAM,LPARAM);
@@ -30,6 +30,21 @@ static BOOL WINAPI write_ini(LPCSTR section,LPCSTR key,LPCSTR value,LPCSTR file)
 {
     if(section && fail_shell) { fail_shell=0; return FALSE; }
     return WritePrivateProfileStringA(section,key,value,file);
+}
+static BOOL WINAPI write_panel_ini(LPCSTR section,LPCSTR key,LPCSTR data,LPCSTR file)
+{
+    if(section && fail_panel_write) { fail_panel_write=0; SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    if(!section && fail_panel_flush) { fail_panel_flush=0; SetLastError(ERROR_WRITE_FAULT); return FALSE; }
+    if(section && drop_panel_write) { drop_panel_write=0; return TRUE; }
+    if(!section && zero_panel_flush) {
+        WritePrivateProfileStringA(section,key,data,file); SetLastError(0); return FALSE;
+    }
+    return WritePrivateProfileStringA(section,key,data,file);
+}
+static BOOL ini_is(const char *ini,const char *name,const char *text)
+{
+    char actual[MAX_PATH]; DWORD length=GetPrivateProfileStringA("MMCPL",name,"\001",actual,sizeof(actual),ini);
+    return text ? (!lstrcmpA(actual,text)) : (length==1 && actual[0]==1);
 }
 static void value(const char *key,const char *name,DWORD type,const void *data,DWORD size)
 {
@@ -81,7 +96,7 @@ static void cleanup(const char *directory)
 void panel_test_entry(void)
 {
     static BYTE image[65536],next_image[65536];
-    static char temporary[MAX_PATH],directory[MAX_PATH],logon[MAX_PATH],executable[MAX_PATH],source[MAX_PATH],ini[MAX_PATH];
+    static char temporary[MAX_PATH],directory[MAX_PATH],logon[MAX_PATH],executable[MAX_PATH],source[MAX_PATH],ini[MAX_PATH],control_ini[MAX_PATH];
     static char base[128],cpls[160],storage[160],services[160],run[160],once[160],backup[160],command[MAX_PATH+4];
     static PanelRecord record,saved;
     static PanelChange change;
@@ -91,7 +106,7 @@ void panel_test_entry(void)
     const char *stage;
     union { FARPROC raw; Applet applet; Host host; } address;
     Applet applet,updated; Host host;
-    NEWCPLINFOA info; CPLINFO static_info;
+    NEWCPLINFOA info; CPLINFO static_info; char title[32],description[128];
     output=CreateFileA("control-panel-test.log",GENERIC_WRITE,0,NULL,CREATE_ALWAYS,0,NULL);
     if(output==INVALID_HANDLE_VALUE) ExitProcess(2);
     file=CreateFileA("build\\w95panel64.cpl",GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
@@ -109,19 +124,43 @@ void panel_test_entry(void)
     wsprintfA(once,"%s\\Once",base); wsprintfA(backup,"%s\\Backup",base);
     panel.root=HKEY_CURRENT_USER; panel.cpls_key=cpls; panel.storage_key=storage;
     panel.executable=executable; panel.image=image; panel.size=size;
+    wsprintfA(control_ini,"%s\\CONTROL.INI",directory);
+    panel.control_ini=control_ini; panel.write_ini=write_panel_ini;
+    WritePrivateProfileStringA("MMCPL","Unrelated","KEEP.CPL",control_ini);
     startup.root=HKEY_CURRENT_USER; startup.service_key=services; startup.run_key=run; startup.once_key=once;
     startup.backup_key=backup; startup.executable=executable; startup.ini=ini; startup.write_ini=write_ini;
     startup.boot_directory=logon; startup.boot_image=boot_image; startup.boot_size=sizeof(boot_image);
     value(cpls,"Unrelated",REG_SZ,"KEEP",5);
+    fail_panel_write=1; error=panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage);
+    check(error==ERROR_ACCESS_DENIED && !lstrcmpA(stage,"panel-ini-write") &&
+        entry_is(cpls,PANEL_VALUE,NULL) && !record_read(storage,&record) && no_cpl(logon) &&
+        ini_is(control_ini,PANEL_VALUE,NULL) && ini_is(control_ini,"Unrelated","KEEP.CPL") &&
+        shell_is(ini,"INERTSHELL.EXE /test"),
+        "a denied legacy INI registration rolls back the DLL and registry before startup changes");
+    fail_panel_flush=1; error=panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage);
+    check(error && !lstrcmpA(stage,"panel-ini-flush") && entry_is(cpls,PANEL_VALUE,NULL) &&
+        ini_is(control_ini,PANEL_VALUE,NULL) && no_cpl(logon),
+        "a legacy INI flush failure removes even a partially written entry");
+    drop_panel_write=1; error=panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage);
+    check(error && !lstrcmpA(stage,"panel-ini-verify") && entry_is(cpls,PANEL_VALUE,NULL) &&
+        ini_is(control_ini,PANEL_VALUE,NULL) && no_cpl(logon),
+        "INI readback rejects a reported write that did not publish the discovery entry");
     fail_shell=1; error=panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage);
     check(error && entry_is(cpls,PANEL_VALUE,NULL) && !record_read(storage,&record) && no_cpl(logon) &&
-        shell_is(ini,"INERTSHELL.EXE /test"),"failed first Enable removes its newly created applet and registration without changing the original shell");
+        shell_is(ini,"INERTSHELL.EXE /test") && ini_is(control_ini,PANEL_VALUE,NULL),"failed first Enable removes its newly created applet and registration without changing the original shell");
     check(panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage)==0 && startup_installed(&startup),
         "Enable installs the private startup gate and Control Panel registration together");
     check(record_read(storage,&record) && entry_is(cpls,PANEL_VALUE,record.module) &&
         !lstrcmpiA(record.owner,executable) && GetFileAttributesA(record.module)!=INVALID_FILE_ATTRIBUTES,
         "the registered owned CPL resides beside the managed executable");
-    saved=record; first=LoadLibraryA(record.module);
+    check(ini_is(control_ini,PANEL_VALUE,record.module) && ini_is(control_ini,"Unrelated","KEEP.CPL"),
+        "CONTROL.INI MMCPL discovers the owned LOGON applet without changing unrelated entries");
+    zero_panel_flush=1; error=panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage); zero_panel_flush=0;
+    check(!error && ini_is(control_ini,PANEL_VALUE,record.module) && startup_installed(&startup),
+        "the documented zero return for a successful INI cache flush is not mistaken for failure");
+    saved=record;
+    GetPrivateProfileStringA("MMCPL",PANEL_VALUE,"",source,sizeof(source),control_ini);
+    first=LoadLibraryA(source);
     address.raw=first ? GetProcAddress(first,"CPlApplet") : NULL; applet=address.applet;
     address.raw=first ? GetProcAddress(first,"PanelTestHost") : NULL; host=address.host;
     check(first && applet && host,"load the actual launcher DLL and its undecorated CPlApplet export");
@@ -129,8 +168,16 @@ void panel_test_entry(void)
     host(HKEY_CURRENT_USER,cpls,inert_launch);
     check(applet(NULL,CPL_INIT,0,0) && applet(NULL,CPL_GETCOUNT,0,0)==1,"the registered launcher exposes exactly one Control Panel item");
     applet(NULL,CPL_INQUIRE,0,(LPARAM)&static_info); applet(NULL,CPL_NEWINQUIRE,0,(LPARAM)&info);
-    check(static_info.idIcon==CPL_DYNAMIC_RES && info.dwSize==sizeof(info) && info.hIcon &&
-        !lstrcmpA(info.szName,"Welcome95") && info.szInfo[0],"the applet supplies a Win95 icon, name and settings description");
+    check(static_info.idIcon==1 && static_info.idName==2 && static_info.idInfo==3 &&
+        LoadIconA(first,MAKEINTRESOURCEA(static_info.idIcon)) &&
+        LoadStringA(first,static_info.idName,title,sizeof(title)) && !lstrcmpA(title,"Welcome95") &&
+        LoadStringA(first,static_info.idInfo,description,sizeof(description)) && description[0],
+        "a legacy host gets the embedded icon name and description using CPL_INQUIRE alone");
+    check(info.dwSize==sizeof(info) && info.hIcon && !lstrcmpA(info.szName,"Welcome95") && info.szInfo[0],
+        "dynamic-metadata hosts retain the same settings item");
+    check(FindResourceExA(first,RT_STRING,MAKEINTRESOURCEA(1),MAKELANGID(LANG_RUSSIAN,SUBLANG_DEFAULT))!=NULL &&
+        FindResourceExA(first,RT_STRING,MAKEINTRESOURCEA(1),MAKELANGID(LANG_ENGLISH,SUBLANG_ENGLISH_US))!=NULL,
+        "static applet descriptions include both Russian and English resource tables");
     wsprintfA(command,"\"%s\"",executable); applet(NULL,CPL_DBLCLK,0,0);
     check(launches==1 && !lstrcmpiA(launched_app,executable) && !lstrcmpA(launched_command,command),
         "double-click launches only the existing managed EXE with a quoted path");
@@ -140,7 +187,8 @@ void panel_test_entry(void)
     check(error && !lstrcmpA(stage,"install-shell-write") && startup_installed(&startup) && applet(NULL,CPL_GETCOUNT,0,0)==1,
         "failed Disable restores the icon and the previously enabled shell gate");
     check(panel_startup_configure(&panel,&startup,FALSE,&migrated,&stage)==0 && !startup_installed(&startup) &&
-        entry_is(cpls,PANEL_VALUE,saved.module) && applet(NULL,CPL_GETCOUNT,0,0)==1,
+        entry_is(cpls,PANEL_VALUE,saved.module) && ini_is(control_ini,PANEL_VALUE,saved.module) &&
+        applet(NULL,CPL_GETCOUNT,0,0)==1,
         "Disable keeps the settings icon available for reenabling the welcome screen");
     applet(NULL,CPL_DBLCLK,0,0);
     check(launches==2,"settings still launch from Control Panel while the welcome screen is disabled");
@@ -159,6 +207,26 @@ void panel_test_entry(void)
     value(cpls,PANEL_VALUE,REG_SZ,saved.module,(DWORD)lstrlenA(saved.module)+1);
     check(panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage)==0,
         "restoring the owned registration allows normal Enable again");
+    check(panel_configure(&panel,TRUE,&change)==0,"snapshot both discovery entries for an ownership-checked rollback");
+    WritePrivateProfileStringA("MMCPL",PANEL_VALUE,"FOREIGN.CPL",control_ini);
+    check(panel_rollback(&panel,&change)==ERROR_BUSY && ini_is(control_ini,PANEL_VALUE,"FOREIGN.CPL") &&
+        entry_is(cpls,PANEL_VALUE,saved.module),
+        "rollback preserves a foreign INI replacement made after its snapshot");
+    WritePrivateProfileStringA("MMCPL",PANEL_VALUE,saved.module,control_ini);
+    check(panel_rollback(&panel,&change)==0 && ini_is(control_ini,PANEL_VALUE,saved.module),
+        "rollback completes only after the expected owned discovery entry is restored");
+    WritePrivateProfileStringA("MMCPL",PANEL_VALUE,"FOREIGN.CPL",control_ini);
+    check(panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage)==ERROR_BUSY &&
+        ini_is(control_ini,PANEL_VALUE,"FOREIGN.CPL") && startup_installed(&startup),
+        "a foreign legacy discovery entry cannot be overwritten by Enable");
+    check(panel_startup_configure(&panel,&startup,FALSE,&migrated,&stage)==0 &&
+        ini_is(control_ini,PANEL_VALUE,"FOREIGN.CPL") && shell_is(ini,"INERTSHELL.EXE /test"),
+        "foreign CONTROL.INI changes never block restoring the original shell");
+    WritePrivateProfileStringA("MMCPL",PANEL_VALUE,NULL,control_ini);
+    check(panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage)==0 &&
+        record_read(storage,&record) && !lstrcmpiA(record.module,saved.module) &&
+        ini_is(control_ini,PANEL_VALUE,saved.module),
+        "a registry-only previous install gains legacy discovery without replacing its loaded DLL");
     record=saved; ++record.checksum; value(storage,"Entry",REG_BINARY,&record,sizeof(record));
     check(panel_configure(&panel,TRUE,&change)==ERROR_INVALID_DATA && entry_is(cpls,PANEL_VALUE,saved.module),
         "changed launcher contents cannot be silently overwritten or trusted");
@@ -169,6 +237,14 @@ void panel_test_entry(void)
     pe=(DWORD)image[60]|((DWORD)image[61]<<8)|((DWORD)image[62]<<16)|((DWORD)image[63]<<24);
     if(pe+9>=size) ExitProcess(2);
     next_image[pe+8]^=1; panel.image=next_image;
+    check(panel_startup_configure(&panel,&startup,FALSE,&migrated,&stage)==0 &&
+        ini_is(control_ini,PANEL_VALUE,saved.module),
+        "prepare the normal disabled-state update while retaining the loaded settings icon");
+    fail_shell=1; error=panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage);
+    check(error && entry_is(cpls,PANEL_VALUE,saved.module) && ini_is(control_ini,PANEL_VALUE,saved.module) &&
+        record_read(storage,&record) && !lstrcmpiA(record.module,saved.module) &&
+        GetFileAttributesA(saved.module)!=INVALID_FILE_ATTRIBUTES,
+        "failed version update restores both discovery routes and the previously loaded module");
     check(panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage)==0 && record_read(storage,&record) &&
         lstrcmpiA(record.module,saved.module) && GetFileAttributesA(saved.module)!=INVALID_FILE_ATTRIBUTES,
         "an updated launcher gets a fresh file without overwriting the still-loaded old module");
@@ -177,12 +253,13 @@ void panel_test_entry(void)
     check(second && updated && host,"load the updated launcher beside the old live module");
     if(!second || !updated || !host) ExitProcess(2);
     host(HKEY_CURRENT_USER,cpls,inert_launch);
-    check(!applet(NULL,CPL_GETCOUNT,0,0) && updated(NULL,CPL_GETCOUNT,0,0)==1,
+    check(!applet(NULL,CPL_GETCOUNT,0,0) && updated(NULL,CPL_GETCOUNT,0,0)==1 && ini_is(control_ini,PANEL_VALUE,record.module),
         "only the currently registered module advertises an icon after an update");
     check(panel_startup_configure(&panel,&startup,FALSE,&migrated,&stage)==0 && updated(NULL,CPL_GETCOUNT,0,0)==1 &&
         entry_is(cpls,"Unrelated","KEEP") && shell_is(ini,"INERTSHELL.EXE /test"),
         "final Disable preserves unrelated items and restores the exact original shell");
-    check(panel_configure(&panel,FALSE,&change)==0 && !updated(NULL,CPL_GETCOUNT,0,0),
+    check(panel_configure(&panel,FALSE,&change)==0 && !updated(NULL,CPL_GETCOUNT,0,0) &&
+        ini_is(control_ini,PANEL_VALUE,NULL) && ini_is(control_ini,"Unrelated","KEEP.CPL"),
         "owned applet unregistration works even with its DLL still loaded");
     updated(NULL,CPL_DBLCLK,0,0);
     check(launches==2,"an unregistered stale module never launches settings");

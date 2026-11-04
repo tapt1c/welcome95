@@ -496,3 +496,35 @@ Target VM checks:
    with the old loaded module. Retain original shell/backups and reboot normally.
 Native Control Panel enumeration and real Win95 authentication need target
 confirmation beyond these Wine fixtures.
+
+
+## Logoff canvas lifetime and first full repaint
+
+The session fixture now waits after committed logoff with no provider: no canvas,
+children or session fonts may be allocated, and no close acknowledgement may be
+published. A separate inert provider then triggers the new canvas. Cancelled
+logoff, reasonless-end/ready fallback, hidden rescue and authenticated one-second
+handoff retain their existing checks.
+
+A contrasting full-screen background and consumed construction/show update
+regions model the missing-background case. Before pumping further input, verify
+actual GDI pixels in the top band, middle and footer, with eight-level tolerance
+for 16-bit channel quantization. Construction must remain hidden; first visible
+painting must have the published canvas HWND. Count every production SetEvent on
+CanvasClosed so a transient set/reset during retirement cannot escape detection.
+
+Target check: on Windows 95/86Box, repeat logoff without touching the mouse or
+keyboard; the complete account-choice canvas must appear without a click and
+without an isolated power button over wallpaper. Then select the sole account,
+enter via the real provider, cancel logoff once and repeat. The cloud test models
+the update-region contract; it does not establish the exact Win95 teardown cause.
+
+
+Current combined suite: 486 checks per resolution, including 64 session, 40 CPL
+and 64 startup checks, passed at 640x480x16, 800x600x24 and 1024x768x24 under
+Wine64/Xvfb. The CPL fixture discovers its DLL through a private CONTROL.INI,
+loads static icon/name/description with CPL_INQUIRE alone, checks Russian/English
+resources and covers denied writes, explicit flush failures, zero-success flush,
+readback mismatch, registry-only upgrade, loaded-version rollback and a foreign
+INI change between apply and rollback. All launches are inert callbacks.
+The native PE audit additionally validates the x86 icon and both STRINGTABLEs.

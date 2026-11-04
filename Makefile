@@ -84,11 +84,17 @@ build/ui_test64.exe: tests/ui_test.c src/welcome95.c $(POWER_SOURCES) $(wildcard
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) -DWELCOME95_TEST_RUSSIAN=1 tests/ui_test.c $(POWER_SOURCES) build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,ui_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
 
 # Native Win95 applet: only metadata and a launcher, not a second settings UI.
-build/w95panel.cpl: src/control_panel_launcher.c src/control_panel.h src/ui_text.h Makefile
-	$(CC) $(CFLAGS) -shared src/control_panel_launcher.c -o $@ $(LDFLAGS) -Wl,--entry,_DllMain@12,--kill-at -luser32 -ladvapi32 -lkernel32
+build/panel-assets.o: assets/control-panel.rc assets/welcome95.ico
+	$(WINDRES) --preprocessor="$(CC)" --preprocessor-arg=-E --preprocessor-arg=-xc --preprocessor-arg=-DRC_INVOKED -I assets assets/control-panel.rc -O coff -o $@
 
-build/w95panel64.cpl: src/control_panel_launcher.c src/control_panel.h src/ui_text.h Makefile
-	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) -DW95_PANEL_TEST -shared src/control_panel_launcher.c -o $@ -mwindows -nostdlib -Wl,--entry,DllMain -luser32 -ladvapi32 -lkernel32
+build/panel-assets64.o: assets/control-panel.rc assets/welcome95.ico
+	$(TEST_WINDRES) --preprocessor="$(TEST_CC)" --preprocessor-arg=-E --preprocessor-arg=-xc --preprocessor-arg=-DRC_INVOKED -I assets assets/control-panel.rc -O coff -o $@
+
+build/w95panel.cpl: src/control_panel_launcher.c src/control_panel.h src/ui_text.h build/panel-assets.o Makefile
+	$(CC) $(CFLAGS) -shared src/control_panel_launcher.c build/panel-assets.o -o $@ $(LDFLAGS) -Wl,--entry,_DllMain@12,--kill-at -luser32 -ladvapi32 -lkernel32
+
+build/w95panel64.cpl: src/control_panel_launcher.c src/control_panel.h src/ui_text.h build/panel-assets64.o Makefile
+	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) -DW95_PANEL_TEST -shared src/control_panel_launcher.c build/panel-assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,DllMain -luser32 -ladvapi32 -lkernel32
 
 build/control_panel_test64.exe: tests/control_panel_test.c src/control_panel.c src/control_panel.h src/startup.c src/startup.h build/w95panel64.cpl Makefile
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/control_panel_test.c src/control_panel.c src/startup.c -o $@ -mwindows -nostdlib -Wl,--entry,panel_test_entry -luser32 -ladvapi32 -lkernel32

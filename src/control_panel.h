@@ -11,14 +11,15 @@ typedef struct {
 } PanelRecord;
 typedef struct {
     HKEY root;
-    const char *cpls_key,*storage_key,*executable;
+    const char *cpls_key,*storage_key,*executable,*control_ini;
+    BOOL (WINAPI *write_ini)(LPCSTR,LPCSTR,LPCSTR,LPCSTR);
     const BYTE *image;
     DWORD size;
 } PanelConfig;
 typedef struct {
-    BOOL record_present,entry_present,applied,enabled;
+    BOOL record_present,entry_present,ini_present,applied,enabled;
     PanelRecord old_record,expected;
-    char old_entry[MAX_PATH],created[MAX_PATH];
+    char old_entry[MAX_PATH],old_ini[MAX_PATH],created[MAX_PATH];
 } PanelChange;
 DWORD panel_configure(const PanelConfig *config,BOOL enable,PanelChange *change);
 DWORD panel_rollback(const PanelConfig *config,PanelChange *change);

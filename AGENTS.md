@@ -270,3 +270,26 @@ Production must export only undecorated CPlApplet; never ship PanelTestHost.
 Audit the native CPL with tests/check_pe.py --panel in addition to main/boot.
 Use private HKCU/files plus inert launch callbacks for lifecycle tests, never
 the host's actual Control Panel registration or a real settings/shell launch.
+
+
+## Canvas presentation after logoff
+
+Committed logoff must retire the old canvas/fonts and wait for a new native
+provider or real OS startup handshake before allocating the next canvas.
+Retirement must never signal CanvasClosed, even briefly before resetting it;
+only authenticated handoff after DestroyWindow may publish that acknowledgement.
+Create the canvas hidden, publish its HWND, then show and explicitly invalidate
+and synchronously redraw its full client and children. UpdateWindow alone cannot
+restore an already consumed update region. Keep the session regression with
+construction/show damage consumed, a contrasting background and real GDI pixels.
+
+
+For Win95 CPL compatibility, keep real icon/name/description resources returned
+by CPL_INQUIRE; do not require CPL_NEWINQUIRE. Audit the actual x86 resources.
+Register the same owned LOGON module in CONTROL.INI [MMCPL] and the existing Cpls
+value, with ownership checks, exact rollback/readback and foreign-entry protection.
+The documented zero BOOL on an INI cache flush is not itself an error; clear/check
+LastError and verify the entry. Test first install, registry-only upgrade,
+loaded-version rollback and an INI replacement made after the snapshot.
+Explorer95's simplified Control Panel is a fixed list; its all-options view uses
+the system namespace. Do not claim to have changed that other product's list.

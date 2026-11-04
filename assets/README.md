@@ -9,3 +9,7 @@ rendered as “95” by the application. No XP executable code is used.
 
 `power-logo.bmp` comes from Explorer95 resource Bitmap143 at the owner's request.
 Source and commit: [docs/POWER_SOURCE.md](../docs/POWER_SOURCE.md).
+
+`welcome95.ico` repackages the same 16x16, 4-bit pixels and palette from
+`power-logo.bmp` as an icon resource with an opaque AND mask. It supplies the
+cacheable CPL_INQUIRE icon; it introduces no new artwork or external icon source.

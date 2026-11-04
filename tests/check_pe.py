@@ -77,6 +77,46 @@ def check(path, bootstrap=False, panel=False):
         names = offset(u32(export + 32))
         exports = {string(offset(u32(names + index * 4))) for index in range(count)}
         require(exports == {'CPlApplet'}, f'Unexpected applet exports: {exports}')
+        # Legacy Win95 hosts obtain cacheable metadata through CPL_INQUIRE;
+        # validate resources in the actual x86 DLL, not just the Wine fixture.
+        resource_root = offset(u32(optional + 112))
+
+        def resource(*ids):
+            directory = 0
+            for depth, identifier in enumerate(ids):
+                at = resource_root + directory
+                named, numbered = struct.unpack_from('<HH', data, at + 12)
+                entries = at + 16
+                found = None
+                for index in range(named + numbered):
+                    name, target = struct.unpack_from('<II', data, entries + index * 8)
+                    if name == identifier:
+                        found = target
+                        break
+                require(found is not None, f'Missing applet resource {ids}')
+                if depth + 1 < len(ids):
+                    require(found & 0x80000000, f'Invalid resource directory {ids}')
+                    directory = found & 0x7fffffff
+                else:
+                    require(not found & 0x80000000, f'Invalid resource data {ids}')
+                    rva, size = struct.unpack_from('<II', data, resource_root + found)
+                    return data[offset(rva):offset(rva) + size]
+
+        group = resource(14, 1, 0)
+        require(len(group) >= 20 and struct.unpack_from('<HHH', group) == (0, 1, 1),
+                'Missing legacy applet icon group')
+        resource(3, struct.unpack_from('<H', group, 18)[0], 0)
+        for language in (1033, 1049):
+            block = resource(6, 1, language)
+            strings = []
+            at = 0
+            for index in range(16):
+                length = struct.unpack_from('<H', block, at)[0]
+                at += 2
+                strings.append(block[at:at + length * 2].decode('utf-16le'))
+                at += length * 2
+            require(strings[2] == 'Welcome95' and strings[3],
+                    f'Missing static applet name/description for language {language}')
     require(u32(optional + 96 + 9 * 8) == 0, 'Unexpected TLS/CRT initialization')
     require(u32(optional + 96 + 14 * 8) == 0, '.NET is not supported')
     print(f'PASS: {path}: x86 GUI, Windows 4.0, {len(imports)} system DLLs, '

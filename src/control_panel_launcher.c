@@ -47,12 +47,12 @@ __declspec(dllexport) LONG CALLBACK CPlApplet(HWND owner,UINT message,LPARAM ind
     if(message==CPL_GETCOUNT) return registered(path) ? 1 : 0;
     if(message==CPL_INQUIRE) {
         CPLINFO *info=(CPLINFO *)parameter;
-        info->idIcon=info->idName=info->idInfo=CPL_DYNAMIC_RES; info->lData=0;
+        info->idIcon=1; info->idName=2; info->idInfo=3; info->lData=0;
     }
     if(message==CPL_NEWINQUIRE) {
         NEWCPLINFOA *info=(NEWCPLINFOA *)parameter;
         clear_bytes(info,sizeof(*info)); info->dwSize=sizeof(*info);
-        info->hIcon=LoadIconA(NULL,IDI_WINLOGO);
+        info->hIcon=LoadIconA(module,MAKEINTRESOURCEA(1));
         lstrcpyA(info->szName,"Welcome95");
         lstrcpyA(info->szInfo,ui_text("\315\340\361\362\360\356\351\352\350 \375\352\360\340\355\340 \357\360\350\342\345\362\361\362\342\350\377 Welcome95.","Welcome95 welcome screen settings."));
     }

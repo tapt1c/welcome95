@@ -563,3 +563,55 @@ CPlApplet, and both helpers are embedded in the rebuilt tracked EXE.
 - [ ] Check the actual native Control Panel item, double-click, disabled-state
       access, reopen/refresh and reenable after the ordinary update/reboot flow.
 Wine uses inert/private fixtures; native Win95 shell enumeration is not claimed.
+
+
+## 2026-11-04: logoff canvas presentation and legacy CPL metadata
+
+The new target video shows the power button over wallpaper after logoff; the
+full canvas appears after selecting the account. No target GDI-handle dump or
+Win95 runtime was available to prove the exact teardown/interleaving cause.
+Two concrete lifetime/presentation hazards were removed: constructing a visible
+canvas during committed session teardown and relying on UpdateWindow without
+explicitly requesting a full first repaint.
+
+Committed logoff now retires the old canvas/fonts, then waits for a new native
+provider or genuine startup handshake before creating the next canvas. The
+window/children are built hidden, the HWND is published before showing, and the
+full client/children are explicitly redrawn. Retirement never publishes
+CanvasClosed, even briefly before resetting it; authenticated handoff retains
+its post-DestroyWindow acknowledgement and one-second welcome delay. Account
+choice remains mandatory after logoff, including one account; cancelled logoff
+preserves the current cycle.
+
+The user additionally reported no Control Panel item. CPL_INQUIRE now returns
+real embedded icon/string resource IDs rather than requiring dynamic metadata;
+English/Russian strings and the supplied 16x16 Windows icon are embedded and
+checked in the actual x86 DLL. Registration also adds the owned LOGON module to
+CONTROL.INI [MMCPL], keeping the existing Cpls record. Both routes participate
+in ownership checks, readback and rollback, including registry-only upgrades,
+loaded older versions, foreign values and changes after a snapshot. Disable
+continues to leave the icon available and restores startup independently.
+
+The Win32 documentation states that a successful INI cache flush may return
+zero. This is accepted only without a reported error and with valid readback;
+explicit write/flush failures still fail setup. Tests cover all three contracts.
+Explorer95 cb970dac has a fixed simplified Control Panel list; its all-options
+view uses the system namespace. Document that distinction; no Explorer95 source
+or binary is changed by this update.
+
+Validation: 486 checks per mode under Wine64/Xvfb at 640x480x16, 800x600x24 and
+1024x768x24; 64 session, 40 CPL and 64 startup checks. Session tests consume
+construction/show update regions over a contrasting background, inspect actual
+band/background/footer pixels (16-bit quantization allowed), and count every
+close-event publication. CPL tests load the module discovered through a private
+CONTROL.INI and exercise legacy resource-only metadata plus inert EXE launch.
+Main/boot/CPL PE audits pass (174/51/15 imports); both production helpers are
+embedded byte-for-byte in the rebuilt tracked EXE. git diff --check passes.
+
+- [ ] On Win95/86Box, log off twice without mouse/keyboard input: the full
+      account-choice canvas must appear without a click or isolated button.
+- [ ] After the normal Disable/close/new EXE/Enable/reboot update, reopen native
+      Control Panel (or Explorer95 all-options view), check the Welcome95 icon,
+      launch settings, Disable and reenable. Preserve loaded old CPL files.
+Target Win95 GDI teardown, shell discovery and authentication are not claimed
+as executed by the cloud fixtures.
