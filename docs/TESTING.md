@@ -375,3 +375,22 @@ passed again at VGA; the refreshed startup capture was inspected.
 The new docs/previews/starting-en.png and settings-compact-en.png are real Wine
 captures with ACP1252 at VGA (no window-manager decorations), not Win95/Russian
 screenshots. Russian control text and geometry are measured in the test build.
+
+
+## XP status-position correction
+
+Compare the actual inert /preview-starting and /preview-shutdown captures at
+640×480 against the user's XP status reference. The shared composition has logo
+bitmap origin (355,168), right edge x=472 for the status line and text-area top y=274.
+The first non-background logo pixel is offset (3,5) inside the supplied 137×86
+bitmap. At 1024×768 the origin must move by (+192,+144), without scaling. Compare
+startup and shutdown with their distinct text; switching modes must not move the
+artwork. Text is right-aligned to the original 384px panel
+with 40px right padding (logo uses 20px); different messages keep the same right
+edge. The footer divider is 2px, as in the original resource UIFILE.
+
+Use Arial 14pt for status text, matching original UIFILE rcstr(1)/rcint(45).
+The rebuilt main/boot PEs pass the compatibility audit. The full 407-check Wine
+suite passed at 640×480×24 for the placement correction; rendering 7/UI 16 checks
+passed again after restoring the original status-font size and right alignment. Real Win95 GDI
+rasterization remains a target check.

@@ -87,7 +87,7 @@ void ui_test_entry(void)
     check(fits(small_font,"\317\356\361\353\345 \342\365\356\344\340 \354\356\346\355\356 \350\347\354\345\355\350\362\374 \355\340\361\362\360\356\351\352\350.\n\316\362\352\360\356\351\362\345 Welcome95 \344\353\377 \355\340\361\362\360\356\351\352\350 \375\352\360\340\355\340.",305,43,TRUE),
         "the Russian footer fits without extending into the password or screen edge");
     set_status_view(screen,VIEW_STARTING); single_started=GetTickCount()-4001; service_single_pending();
-    check(status_view==VIEW_STARTING && !IsWindowVisible(GetDlgItem(screen,ID_SUBMIT)) && fits(message_font,"\307\340\357\363\361\352 Windows...",640,51,FALSE),
+    check(status_view==VIEW_STARTING && !IsWindowVisible(GetDlgItem(screen,ID_SUBMIT)) && fits(message_font,"\307\340\357\363\361\352 Windows...",344,51,FALSE),
         "startup preview stays inert and its Russian status fits the reference layout");
     set_status_view(screen,VIEW_LOGIN);
     show_power_dialog(screen); dialog=FindWindowA("Welcome95.PowerChoice",NULL);

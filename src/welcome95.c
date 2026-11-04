@@ -359,7 +359,7 @@ static void create_ui_fonts(void)
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Tahoma");
     settings_title_font = CreateFontA(-13,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Tahoma");
-    message_font = CreateFontA(-18,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+    message_font = CreateFontA(-font_pixels(14),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Arial");
 }
 static BOOL russian_ui(void)
@@ -392,6 +392,15 @@ static void paint_logo_at(HDC dc, int x, int y)
     SetTextColor(dc, RGB(255,156,33));
     label(dc, body_font, "95", suffix, DT_LEFT | DT_SINGLELINE);
     SetTextColor(dc, RGB(255,255,255));
+}
+static void paint_status_message(HDC dc, const char *text)
+{
+    RECT rectangle;
+    /* XP UIFILE: centered 384px panel, product right padding 20px,
+       help right padding 40px. VGA bitmap (355,168), text right edge 472. */
+    paint_logo_at(dc,cx(435),cy(228));
+    SetRect(&rectangle,cx(208),cy(334),cx(552),cy(385));
+    label(dc,message_font,text,rectangle,DT_RIGHT|DT_SINGLELINE);
 }
 static void login_hotkeys(HWND hwnd,BOOL enable);
 static void set_status_view(HWND hwnd, int view)
@@ -483,8 +492,10 @@ static void paint_welcome(HWND hwnd)
         fill(dc, rectangle, RGB(57-band*57/127,52-band*4/127,173-band*17/127));
     }
     bitmap(dc, 125, 0, 78, area.right, 2);
-    if(status_view==VIEW_STARTING || status_view==VIEW_SHUTDOWN ||
-        (status_view!=VIEW_WELCOME_SINGLE && !compact_layout())) bitmap(dc,126,0,by(504),area.right,3);
+    if(status_view==VIEW_STARTING || status_view==VIEW_SHUTDOWN)
+        bitmap(dc,126,0,by(504),area.right,2);
+    else if(status_view!=VIEW_WELCOME_SINGLE && !compact_layout())
+        bitmap(dc,126,0,by(504),area.right,3);
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255,255,255));
     if (status_view == VIEW_WELCOME_SINGLE) {
         paint_greeting(dc, 100, 800); finish_paint(hwnd,&paint,dc,frame,old); return;
@@ -504,15 +515,11 @@ static void paint_welcome(HWND hwnd)
         finish_paint(hwnd,&paint,dc,frame,old); return;
     }
     if(status_view==VIEW_STARTING) {
-        paint_logo_at(dc,cx(372),cy(232));
-        SetRect(&rectangle,cx(80),cy(338),cx(720),cy(389));
-        label(dc,message_font,ui_text("\307\340\357\363\361\352 Windows...","Windows is starting up..."),rectangle,DT_CENTER|DT_SINGLELINE);
+        paint_status_message(dc,ui_text("\307\340\357\363\361\352 Windows...","Windows is starting up..."));
         finish_paint(hwnd,&paint,dc,frame,old); return;
     }
     if (status_view == VIEW_SHUTDOWN) {
-        paint_logo_at(dc,cx(332),cy(232));
-        SetRect(&rectangle, cx(80), cy(338), cx(720), cy(389));
-        label(dc, message_font, ending_unknown ? (russian_ui() ? "\317\356\344\356\346\344\350\362\345..." : "Please wait...") : russian_ui() ? "\307\340\342\345\360\370\345\355\350\345\040\360\340\341\356\362\373\040\127\151\156\144\157\167\163\056\056\056" : "Windows is shutting down...", rectangle, DT_CENTER | DT_SINGLELINE);
+        paint_status_message(dc,ending_unknown ? (russian_ui() ? "\317\356\344\356\346\344\350\362\345..." : "Please wait...") : russian_ui() ? "\307\340\342\345\360\370\345\355\350\345\040\360\340\341\356\362\373\040\127\151\156\144\157\167\163\056\056\056" : "Windows is shutting down...");
         finish_paint(hwnd,&paint,dc,frame,old); return;
     }
     bitmap(dc,124,compact_layout() ? compact_x(128) : cx(398),compact_layout() ? compact_y(208) : 96,1,compact_layout() ? 170 : by(486)-96);

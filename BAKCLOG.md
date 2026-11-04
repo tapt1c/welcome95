@@ -414,3 +414,28 @@ and the updated startup screenshot was inspected.
 - [ ] Confirm manual recovery with slow/error/replaced native providers on Win95.
 - [ ] Visually compare Russian 32pt greeting/status screen and compact settings
       using the VM's actual DPI, GDI driver and fonts.
+
+
+## Status placement from the XP VGA reference (current)
+
+The user supplied an original XP shutdown image beside the previous Welcome95
+startup capture. The previous arbitrary 40px logo move left both logo and status
+line misplaced. Startup and shutdown now use one paint_status_message function:
+At 640×480 the logo bitmap origin is (355,168), text right edge is x=472 and
+text-area top is y=274. This moves startup artwork +63px/-4px and raises its
+line 4px from 77b245d. Text follows the original right alignment; shutdown uses
+the same placement. Coordinates retain center-relative anchors,
+137×86 artwork and Arial 14pt from the original UIFILE (rcstr 1 / rcint 45).
+The previous 18px status font was narrower than the XP reference. The footer
+divider uses the original UIFILE's 2px height rather than 3px. Windows 95 suffix remains deliberate.
+Original UIFILE confirms a centered 384px panel with 20px product and 40px help
+right padding; text is right-aligned, so different status strings share the
+same right edge. Authentication, native controls and session/shell timing are
+unchanged.
+
+Validation: the 407-check Wine suite passed at 640×480×24 for the position change.
+After the final original-font/right-alignment correction, 7 rendering and 16
+Russian UI checks passed again; the UI test now measures the actual 344px status
+area. Actual startup/shutdown screenshots were inspected; both visible status
+strings end at x=469 under Wine. Main/bootstrap PE audits pass. Real Win95 font
+rasterization remains a target-system check.
