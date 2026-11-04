@@ -176,7 +176,7 @@ static BOOL configure(HWND owner,BOOL enable)
     DWORD error;
     HANDLE event;
     BOOL migrated=FALSE;
-    char message[240];
+    char message[512];
     if(enable && !(GetVersion()&0x80000000UL)) {
         error_box(owner,ui_text("\300\342\362\356\347\340\357\363\361\352 \344\356\361\362\363\357\345\355 \362\356\353\374\352\356 \342 Windows 95/98/Me. \302 \344\360\363\343\350\365 \361\350\361\362\345\354\340\365 \344\356\361\362\363\357\345\355 \357\360\356\361\354\356\362\360.","Automatic startup is intended for Windows 95/98/Me. Preview is available on other systems.")); return FALSE;
     }
@@ -186,7 +186,7 @@ static BOOL configure(HWND owner,BOOL enable)
     }
     error=enable ? startup_enable_managed(&startup_config,&migrated) : startup_configure(&startup_config,FALSE);
     if(error) {
-        wsprintfA(message,ui_text("\315\345 \363\344\340\353\356\361\374 \350\347\354\345\355\350\362\374 \340\342\362\356\347\340\357\363\361\352 Welcome95 (\356\370\350\341\352\340 %lu).\r\n\320\345\347\345\360\342\355\340\377 \352\356\357\350\377 \357\360\345\346\355\345\351 \356\341\356\353\356\367\352\350 \361\356\365\360\340\355\345\355\340. \317\360\356\342\345\360\374\362\345 \363\361\362\340\355\356\342\352\363 \350 SYSTEM.INI \357\345\360\345\344 \357\356\342\362\356\360\355\356\351 \357\356\357\373\362\352\356\351.","Cannot update Welcome95 startup (error %lu).\r\nThe previous shell backup is retained. Check ownership and SYSTEM.INI before retrying."),error);
+        wsprintfA(message,ui_text("\315\345 \363\344\340\353\356\361\374 \350\347\354\345\355\350\362\374 \340\342\362\356\347\340\357\363\361\352 Welcome95 (\356\370\350\341\352\340 %lu).\r\n\335\362\340\357: %s\r\n\306\363\360\355\340\353 \363\361\362\340\355\356\342\352\350: LOGON\\W95START.LOG.","Cannot update Welcome95 startup (error %lu).\r\nStage: %s\r\nSetup log: LOGON\\W95START.LOG."),error,startup_failure_stage());
         error_box(owner,message); return FALSE;
     }
     if(!enable || migrated) {

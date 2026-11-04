@@ -237,3 +237,16 @@ After manual VIEW_LOGIN, confirmed loading must show the selected account even
 if it is the only account. Only quiet automatic VIEW_STARTING may proceed to
 the lone greeting. Derive this from the UI phase, never by reading password
 contents. Preserve real OS-ready gating, loading delay and close acknowledgement.
+
+## Installer access contracts and early diagnostics
+
+RegFlushKey requires KEY_QUERY_VALUE even when the key was opened for writes.
+Do not rely on Wine's permissive implementation; keep the strict API-contract
+startup fixture. Allocate shell recovery BAKs with CREATE_NEW and bounded unique
+names. Retry ACCESS_DENIED only for a confirmed existing destination; retain
+its contents and never mask a genuine denied write/flush as success.
+Setup diagnostics must work before Owner exists, remain in the managed LOGON
+directory through legacy migration, preserve LastError and contain only fixed
+operation tags and numeric codes. Preserve the actual failure stage through
+successful rollback. A target screenshot with code 5 alone does not establish
+which API failed; state reproduced defects separately from target confirmation.

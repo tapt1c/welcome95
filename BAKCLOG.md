@@ -484,3 +484,40 @@ Daniel profile and private ready/closed events; it does not authenticate.
       one passwordless automatic account still shows only the greeting.
 - [ ] Recheck wrong-password retry, rescue, logoff/relogon and shell/autostart delay
       on the real providers. Wine tests do not establish actual Win95 boot/GDI.
+
+## Enable error 5: access contracts and setup diagnostics (current)
+
+The user's screenshot proves ERROR_ACCESS_DENIED (5) during Enable after the
+managed LOGON copy launched. It does not identify which API failed; no new
+target-system setup log was supplied. Two concrete defects were reproduced
+against the preceding dff7f7f source in explicit API-contract fixtures:
+
+- put_string opened keys with KEY_SET_VALUE only, then called RegFlushKey. Its
+  documented contract requires KEY_QUERY_VALUE. Open with both minimal rights.
+- Recovery files used temporary-file rename followed by TRUNCATE_EXISTING.
+  Destination collisions reported as ACCESS_DENIED were treated as fatal.
+  Reserve a generated 8.3 BAK directly using CREATE_NEW; retry only when an
+  existing destination is confirmed, preserve its contents and bound attempts.
+
+A genuine flush/write denial is still fatal; no ACL/attribute changes, suppressed
+errors or fabricated installation success were added. The untouched preceding
+source fails both stricter fixtures. The corrected module passes 64 startup
+checks, including injected genuine flush denial without shell activation, exact
+failure-stage reporting and journal content/privacy checks. Wine's normal
+RegFlushKey implementation alone did not establish this access requirement.
+Reference: MicrosoftDocs/sdk-api, winreg/nf-winreg-regflushkey.md (KEY_QUERY_VALUE).
+
+Setup now journals directly beside the invoking EXE before Owner metadata exists.
+Managed relocation retains the new LOGON journal context through nested legacy
+Disable, rather than writing new setup stages into the old directory. Records
+cover boot reservation/create/write/flush, recovery reservation/write/flush,
+registry key/value role and operation, SYSTEM.INI write/readback and final result.
+Only fixed tags and numbers are logged; no stored values, command lines, paths
+or password text. The bounded best-effort journal preserves caller LastError.
+Error UI displays the exact stage and LOGON/W95START.LOG location.
+
+Validation: 433 checks per resolution in the standard three Wine modes, including
+64 startup checks; production main/boot PE audits pass (174/51 imports). Actual
+Win95 Enable must be repeated; the screenshot alone does not prove which of the
+reproduced paths caused this particular refusal. If refusal remains, the exact
+new stage/log identifies the next target-specific failure.

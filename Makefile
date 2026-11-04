@@ -68,7 +68,7 @@ build/layout_test64.exe: tests/layout_test.c src/welcome95.c $(POWER_SOURCES) $(
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/layout_test.c $(POWER_SOURCES) build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,layout_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32
 
 build/startup_test64.exe: tests/startup_test.c src/startup.c src/startup.h Makefile
-	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/startup_test.c src/startup.c -o $@ -mwindows -nostdlib -Wl,--entry,startup_test_entry -luser32 -ladvapi32 -lkernel32
+	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/startup_test.c -o $@ -mwindows -nostdlib -Wl,--entry,startup_test_entry -luser32 -ladvapi32 -lkernel32
 
 build/session_test64.exe: src/bootstrap.c src/bootstrap.h tests/session_test.c src/welcome95.c $(POWER_SOURCES) $(wildcard src/*.h) build/assets64.o Makefile
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/session_test.c src/bootstrap.c -DWELCOME95_BOOTSTRAP_NO_ENTRY $(POWER_SOURCES) build/assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,session_test_entry -luser32 -lgdi32 -ladvapi32 -lkernel32 -lshell32

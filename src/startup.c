@@ -4,6 +4,29 @@
 /* Configuration runs serially on the UI/controller thread. Static staging
    buffers keep legacy stack frames below one page without a CRT stack probe. */
 typedef struct { BOOL present; char text[STARTUP_TEXT]; } Entry;
+static const char *journal_owner;
+static char failure_stage[96];
+static void trace_file(const char *executable,const char *stage,DWORD code);
+const char *startup_failure_stage(void) { return failure_stage[0] ? failure_stage : "install-validation"; }
+static DWORD install_step(const StartupConfig *c,const char *stage,DWORD error)
+{
+    if(error) lstrcpynA(failure_stage,stage,sizeof(failure_stage));
+    trace_file(journal_owner ? journal_owner : c->executable,stage,error);
+    return error;
+}
+static DWORD registry_step(const StartupConfig *c,const char *key,const char *name,const char *operation,DWORD error)
+{
+    static const char *fields[]={"Owner","OriginalShell","HadShell","Gate","RecoveryFile","Valid"};
+    const char *role="other",*field="entry";
+    char stage[96]; int i;
+    if(!lstrcmpA(key,c->backup_key)) role="backup";
+    else if(!lstrcmpA(key,c->service_key)) role="service";
+    else if(!lstrcmpA(key,c->run_key)) role="run";
+    else if(!lstrcmpA(key,c->once_key)) role="once";
+    for(i=0;i<6;++i) if(!lstrcmpA(name,fields[i])) { field=fields[i]; break; }
+    wsprintfA(stage,"install-reg-%s-%s-%s",role,field,operation);
+    return install_step(c,stage,error);
+}
 static DWORD read_string(const StartupConfig *c,const char *key,const char *name,Entry *entry)
 {
     HKEY handle;
@@ -11,24 +34,28 @@ static DWORD read_string(const StartupConfig *c,const char *key,const char *name
     entry->present=FALSE; entry->text[0]=0;
     error=RegOpenKeyExA(c->root,key,0,KEY_QUERY_VALUE,&handle);
     if(error==ERROR_FILE_NOT_FOUND) return 0;
-    if(error) return error;
+    if(error) return registry_step(c,key,name,"open-read",error);
     error=RegQueryValueExA(handle,name,NULL,&type,(BYTE *)entry->text,&size); RegCloseKey(handle);
     if(error==ERROR_FILE_NOT_FOUND) return 0;
-    if(error) return error;
-    if(type!=REG_SZ || !size || size>sizeof(entry->text) || entry->text[size-1]) return ERROR_INVALID_DATA;
+    if(error) return registry_step(c,key,name,"query",error);
+    if(type!=REG_SZ || !size || size>sizeof(entry->text) || entry->text[size-1]) return registry_step(c,key,name,"validate",ERROR_INVALID_DATA);
     entry->present=TRUE; return 0;
 }
 static DWORD put_string(const StartupConfig *c,const char *key,const char *name,const char *value)
 {
     HKEY handle;
-    DWORD error=RegCreateKeyExA(c->root,key,0,NULL,0,KEY_SET_VALUE,NULL,&handle,NULL);
+    DWORD error=RegCreateKeyExA(c->root,key,0,NULL,0,KEY_SET_VALUE|KEY_QUERY_VALUE,NULL,&handle,NULL);
+    registry_step(c,key,name,"open-write",error);
     if(error) return error;
     if(value) error=RegSetValueExA(handle,name,0,REG_SZ,(const BYTE *)value,(DWORD)lstrlenA(value)+1);
     else {
         error=RegDeleteValueA(handle,name);
         if(error==ERROR_FILE_NOT_FOUND) error=0;
     }
-    if(!error && value && !lstrcmpA(name,"Valid")) error=RegFlushKey(handle);
+    registry_step(c,key,name,value ? "set" : "delete",error);
+    if(!error && value && !lstrcmpA(name,"Valid")) {
+        error=RegFlushKey(handle); registry_step(c,key,name,"flush",error);
+    }
     RegCloseKey(handle); return error;
 }
 static DWORD read_shell(const StartupConfig *c,Entry *entry)
@@ -43,10 +70,15 @@ static DWORD read_shell(const StartupConfig *c,Entry *entry)
 static DWORD set_shell(const StartupConfig *c,const char *value)
 {
     Entry verify;
-    if(!c->write_ini("boot","shell",value,c->ini)) return ERROR_WRITE_FAULT;
+    SetLastError(0);
+    if(!c->write_ini("boot","shell",value,c->ini)) {
+        DWORD error=GetLastError();
+        return install_step(c,"install-shell-write",error ? error : ERROR_WRITE_FAULT);
+    }
+    install_step(c,"install-shell-write",0);
     c->write_ini(NULL,NULL,NULL,c->ini);
-    if(read_shell(c,&verify)) return ERROR_READ_FAULT;
-    if(value ? (!verify.present || lstrcmpA(verify.text,value)) : verify.present) return ERROR_WRITE_FAULT;
+    if(read_shell(c,&verify)) return install_step(c,"install-shell-readback",ERROR_READ_FAULT);
+    if(value ? (!verify.present || lstrcmpA(verify.text,value)) : verify.present) return install_step(c,"install-shell-verify",ERROR_WRITE_FAULT);
     return 0;
 }
 static DWORD gate_command(const StartupConfig *c,char *text)
@@ -84,17 +116,26 @@ static DWORD deploy_boot(const StartupConfig *c,char *path)
 {
     char directory[MAX_PATH],short_path[MAX_PATH];
     HANDLE file;
-    DWORD length,written,error;
+    DWORD length,written=0,error;
     if(!c->boot_directory || !c->boot_image || !c->boot_size) return ERROR_RESOURCE_DATA_NOT_FOUND;
-    if(!GetTempFileNameA(c->boot_directory,"W95",0,directory)) return GetLastError();
-    if(!DeleteFileA(directory)) return GetLastError();
-    if(!CreateDirectoryA(directory,NULL)) return GetLastError();
+    if(!GetTempFileNameA(c->boot_directory,"W95",0,directory)) return install_step(c,"install-boot-reserve",GetLastError());
+    if(!DeleteFileA(directory)) return install_step(c,"install-boot-release",GetLastError());
+    if(!CreateDirectoryA(directory,NULL)) return install_step(c,"install-boot-directory",GetLastError());
+    install_step(c,"install-boot-directory",0);
     wsprintfA(path,"%s\\W95BOOT.EXE",directory);
     length=GetShortPathNameA(directory,short_path,sizeof(short_path));
-    if(!length || length+13>=128 || !ascii_path(short_path)) { error=ERROR_INVALID_NAME; goto failed; }
+    if(!length || length+13>=128 || !ascii_path(short_path)) { error=install_step(c,"install-boot-short-path",ERROR_INVALID_NAME); goto failed; }
     file=CreateFileA(path,GENERIC_WRITE,0,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,NULL);
-    if(file==INVALID_HANDLE_VALUE) { error=GetLastError(); goto failed; }
-    error=WriteFile(file,c->boot_image,c->boot_size,&written,NULL) && written==c->boot_size && FlushFileBuffers(file) ? 0 : ERROR_WRITE_FAULT;
+    if(file==INVALID_HANDLE_VALUE) { error=install_step(c,"install-boot-create",GetLastError()); goto failed; }
+    install_step(c,"install-boot-create",0);
+    error=WriteFile(file,c->boot_image,c->boot_size,&written,NULL) ? 0 : GetLastError();
+    if(!error && written!=c->boot_size) error=ERROR_WRITE_FAULT;
+    install_step(c,"install-boot-write",error);
+    if(!error) {
+        if(FlushFileBuffers(file)) error=0;
+        else { error=GetLastError(); if(!error) error=ERROR_WRITE_FAULT; }
+        install_step(c,"install-boot-flush",error);
+    }
     CloseHandle(file);
     if(error) goto failed;
     wsprintfA(path,"%s\\W95BOOT.EXE",short_path); return 0;
@@ -224,24 +265,38 @@ static DWORD recovery_file(const StartupConfig *c,const char *shell,char *path)
     static char directory[MAX_PATH],temporary[MAX_PATH],text[STARTUP_TEXT+32];
     int length,attempt;
     HANDLE file;
-    DWORD written,error=ERROR_FILE_EXISTS,size;
+    DWORD written=0,error=ERROR_FILE_EXISTS,size,seed=GetTickCount();
     lstrcpynA(directory,c->executable,sizeof(directory)); length=lstrlenA(directory);
     while(length && directory[length-1]!='\\' && directory[length-1]!='/') --length;
     if(!length) return ERROR_PATH_NOT_FOUND;
     directory[length]=0;
     for(attempt=0;attempt<64;++attempt) {
-        if(!GetTempFileNameA(directory,"W95",0,temporary)) return GetLastError();
+        /* Nonzero unique only generates an 8.3 name. Reserve the BAK itself
+           with CREATE_NEW, never rename a temporary file over an old backup. */
+        UINT unique=(UINT)((seed+(DWORD)attempt)%65535)+1;
+        if(!GetTempFileNameA(directory,"W95",unique,temporary)) return install_step(c,"install-recovery-name",GetLastError());
         lstrcpyA(path,temporary); length=lstrlenA(path);
         path[length-3]='B'; path[length-2]='A'; path[length-1]='K';
-        if(MoveFileA(temporary,path)) break;
-        error=GetLastError(); DeleteFileA(temporary);
-        if(error!=ERROR_FILE_EXISTS && error!=ERROR_ALREADY_EXISTS) return error;
+        file=CreateFileA(path,GENERIC_WRITE,FILE_SHARE_READ,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,NULL);
+        if(file!=INVALID_HANDLE_VALUE) break;
+        error=GetLastError();
+        if((error!=ERROR_FILE_EXISTS && error!=ERROR_ALREADY_EXISTS && error!=ERROR_ACCESS_DENIED) ||
+           GetFileAttributesA(path)==INVALID_FILE_ATTRIBUTES) return install_step(c,"install-recovery-create",error);
+        /* Win95 can report ACCESS_DENIED for an existing destination. Only a
+           confirmed collision is retried; real write denial stays fatal. */
+        trace_file(journal_owner ? journal_owner : c->executable,"install-recovery-collision",error);
     }
-    if(attempt==64) return error;
-    file=CreateFileA(path,GENERIC_WRITE,FILE_SHARE_READ,NULL,TRUNCATE_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
-    if(file==INVALID_HANDLE_VALUE) { error=GetLastError(); DeleteFileA(path); return error; }
+    if(attempt==64) return install_step(c,"install-recovery-exhausted",error);
+    install_step(c,"install-recovery-create",0);
     wsprintfA(text,"[boot]\r\nshell=%s\r\n",shell); size=(DWORD)lstrlenA(text);
-    error=WriteFile(file,text,size,&written,NULL) && written==size && FlushFileBuffers(file) ? 0 : ERROR_WRITE_FAULT;
+    error=WriteFile(file,text,size,&written,NULL) ? 0 : GetLastError();
+    if(!error && written!=size) error=ERROR_WRITE_FAULT;
+    install_step(c,"install-recovery-write",error);
+    if(!error) {
+        if(FlushFileBuffers(file)) error=0;
+        else { error=GetLastError(); if(!error) error=ERROR_WRITE_FAULT; }
+        install_step(c,"install-recovery-flush",error);
+    }
     CloseHandle(file);
     if(error) DeleteFileA(path);
     return error;
@@ -291,7 +346,7 @@ BOOL startup_installed(const StartupConfig *c)
     if(!service.present || !owned_command(c,service.text,"/welcome")) return FALSE;
     return run.present && owned_command(c,run.text,"/session-ready");
 }
-DWORD startup_configure(const StartupConfig *c,BOOL enable)
+static DWORD configure_impl(const StartupConfig *c,BOOL enable)
 {
     static Entry old[3],shell,original,saved_gate,owner;
     const char *keys[3];
@@ -380,9 +435,20 @@ failed:
        /shell invocation whose SYSTEM.INI command was cached by Windows. */
     return 0;
 }
+DWORD startup_configure(const StartupConfig *c,BOOL enable)
+{
+    const char *previous=journal_owner;
+    DWORD error;
+    if(!previous) { journal_owner=c->executable; failure_stage[0]=0; }
+    trace_file(journal_owner,enable ? "install-enable-begin" : "install-disable-begin",0);
+    error=configure_impl(c,enable);
+    trace_file(journal_owner,enable ? "install-enable-result" : "install-disable-result",error);
+    journal_owner=previous;
+    return error;
+}
 
 /* Relocation restores previous metadata, startup entries and shell on failure. */
-DWORD startup_enable_managed(const StartupConfig *c,BOOL *migrated)
+static DWORD enable_managed_impl(const StartupConfig *c,BOOL *migrated)
 {
     static const char *names[]={"Owner","OriginalShell","HadShell","Gate","RecoveryFile","Valid"};
     static Entry owner,valid,metadata[6],entries[3],shell;
@@ -415,28 +481,47 @@ DWORD startup_enable_managed(const StartupConfig *c,BOOL *migrated)
     part=set_shell(c,shell.present ? shell.text : NULL); if(part) rollback=part;
     return rollback ? ERROR_CAN_NOT_COMPLETE : error;
 }
+DWORD startup_enable_managed(const StartupConfig *c,BOOL *migrated)
+{
+    const char *previous=journal_owner;
+    DWORD error;
+    if(!previous) { journal_owner=c->executable; failure_stage[0]=0; }
+    trace_file(journal_owner,"install-managed-begin",0);
+    error=enable_managed_impl(c,migrated);
+    trace_file(journal_owner,"install-managed-result",error);
+    journal_owner=previous;
+    return error;
+}
 
 /* Best-effort bounded metadata journal; no commands, usernames or edit contents. */
-void startup_trace(HKEY root,const char *key,const char *stage,DWORD code)
+static void trace_file(const char *executable,const char *stage,DWORD code)
 {
-    HKEY handle; HANDLE file;
+    HANDLE file;
     char path[MAX_PATH],line[160];
-    DWORD size=sizeof(path),type,written,length;
+    DWORD written,length,saved_error=GetLastError();
     int end;
-    if(RegOpenKeyExA(root,key,0,KEY_QUERY_VALUE,&handle)) return;
-    type=0;
-    if(RegQueryValueExA(handle,"Owner",NULL,&type,(BYTE *)path,&size) || type!=REG_SZ || !size || size>=sizeof(path) || path[size-1]) {
-        RegCloseKey(handle); return;
-    }
-    RegCloseKey(handle); path[sizeof(path)-1]=0;
+    if(!executable || lstrlenA(executable)>=MAX_PATH) return;
+    lstrcpyA(path,executable);
     end=lstrlenA(path);
     while(end && path[end-1]!='\\' && path[end-1]!='/') --end;
     if(!end || end+13>=MAX_PATH) return;
     lstrcpyA(path+end,"W95START.LOG");
     file=CreateFileA(path,GENERIC_WRITE,FILE_SHARE_READ,NULL,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
-    if(file==INVALID_HANDLE_VALUE) return;
+    if(file==INVALID_HANDLE_VALUE) { SetLastError(saved_error); return; }
     length=SetFilePointer(file,0,NULL,FILE_END);
     if(length>65536) { SetFilePointer(file,0,NULL,FILE_BEGIN); SetEndOfFile(file); }
     wsprintfA(line,"%lu pid=%lu %s code=%lu\r\n",GetTickCount(),GetCurrentProcessId(),stage,code);
     WriteFile(file,line,(DWORD)lstrlenA(line),&written,NULL); CloseHandle(file);
+    SetLastError(saved_error);
+}
+void startup_trace(HKEY root,const char *key,const char *stage,DWORD code)
+{
+    HKEY handle;
+    char path[MAX_PATH];
+    DWORD size=sizeof(path),type=0;
+    if(RegOpenKeyExA(root,key,0,KEY_QUERY_VALUE,&handle)) return;
+    if(RegQueryValueExA(handle,"Owner",NULL,&type,(BYTE *)path,&size) || type!=REG_SZ || !size || size>=sizeof(path) || path[size-1]) {
+        RegCloseKey(handle); return;
+    }
+    RegCloseKey(handle); trace_file(path,stage,code);
 }

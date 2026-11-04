@@ -1,6 +1,66 @@
 /* Uses private HKCU keys and a temporary INI, never the system's startup. */
 #include <windows.h>
 #include "../src/startup.h"
+/* Wine does not enforce this documented registry-flush access requirement.
+   Model the stricter API contract while retaining real private registry/files. */
+static HKEY last_created_key;
+static REGSAM last_created_access;
+static int flush_calls,denied_flushes,deny_flush_once,backup_collision;
+static char collision_backup[MAX_PATH];
+static LONG WINAPI checked_create_key(HKEY root,LPCSTR key,DWORD reserved,LPSTR class_name,
+    DWORD options,REGSAM access,LPSECURITY_ATTRIBUTES security,PHKEY handle,LPDWORD disposition)
+{
+    LONG error=RegCreateKeyExA(root,key,reserved,class_name,options,access,security,handle,disposition);
+    if(!error) { last_created_key=*handle; last_created_access=access; }
+    return error;
+}
+static LONG WINAPI checked_flush(HKEY key)
+{
+    ++flush_calls;
+    if(deny_flush_once || (key==last_created_key && !(last_created_access&KEY_QUERY_VALUE))) {
+        deny_flush_once=0; ++denied_flushes; return ERROR_ACCESS_DENIED;
+    }
+    return RegFlushKey(key);
+}
+static BOOL WINAPI checked_move(LPCSTR source,LPCSTR destination)
+{
+    if(GetFileAttributesA(destination)!=INVALID_FILE_ATTRIBUTES) {
+        SetLastError(ERROR_ACCESS_DENIED); return FALSE;
+    }
+    return MoveFileA(source,destination);
+}
+static HANDLE WINAPI checked_file(LPCSTR path,DWORD access,DWORD sharing,LPSECURITY_ATTRIBUTES security,
+    DWORD creation,DWORD attributes,HANDLE template_file)
+{
+    if(creation==CREATE_NEW && GetFileAttributesA(path)!=INVALID_FILE_ATTRIBUTES) {
+        SetLastError(ERROR_ACCESS_DENIED); return INVALID_HANDLE_VALUE;
+    }
+    return CreateFileA(path,access,sharing,security,creation,attributes,template_file);
+}
+static UINT WINAPI checked_temp(LPCSTR directory,LPCSTR prefix,UINT unique,LPSTR path)
+{
+    UINT result=GetTempFileNameA(directory,prefix,unique,path);
+    if(result && backup_collision) {
+        HANDLE file; DWORD written; int length;
+        backup_collision=0; lstrcpyA(collision_backup,path); length=lstrlenA(collision_backup);
+        collision_backup[length-3]='B'; collision_backup[length-2]='A'; collision_backup[length-1]='K';
+        file=CreateFileA(collision_backup,GENERIC_WRITE,0,NULL,CREATE_NEW,0,NULL);
+        if(file==INVALID_HANDLE_VALUE) ExitProcess(2);
+        WriteFile(file,"KEEP-BAK",8,&written,NULL); CloseHandle(file);
+    }
+    return result;
+}
+#define RegCreateKeyExA checked_create_key
+#define RegFlushKey checked_flush
+#define MoveFileA checked_move
+#define CreateFileA checked_file
+#define GetTempFileNameA checked_temp
+#include "../src/startup.c"
+#undef RegCreateKeyExA
+#undef RegFlushKey
+#undef MoveFileA
+#undef CreateFileA
+#undef GetTempFileNameA
 static HANDLE output;
 static int failures,fail_ini,fail_after;
 static void check(BOOL okay,const char *text)
@@ -71,6 +131,19 @@ static BOOL file_text(const char *path,const char *text)
     ReadFile(file,buffer,sizeof(buffer)-1,&read,NULL); CloseHandle(file); buffer[read]=0;
     return !lstrcmpA(buffer,text);
 }
+static BOOL file_contains(const char *path,const char *text)
+{
+    static char buffer[65537];
+    DWORD read=0,i,j,length=(DWORD)lstrlenA(text);
+    HANDLE file=CreateFileA(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_EXISTING,0,NULL);
+    if(file==INVALID_HANDLE_VALUE) return FALSE;
+    ReadFile(file,buffer,sizeof(buffer)-1,&read,NULL); CloseHandle(file);
+    for(i=0;i+length<=read;++i) {
+        for(j=0;j<length && buffer[i+j]==text[j];++j) { }
+        if(j==length) return TRUE;
+    }
+    return FALSE;
+}
 static void remove_fixture(const char *directory)
 {
     WIN32_FIND_DATAA data; HANDLE search; char pattern[MAX_PATH],path[MAX_PATH];
@@ -115,12 +188,30 @@ void startup_test_entry(void)
     value(run,"Unrelated","KEEP"); value(service,"Unrelated","KEEP"); value(once,"Unrelated","KEEP");
     check(!startup_installed(&config),"a fresh fixture is not enabled");
     check(startup_original(&config,saved,sizeof(saved))==ERROR_FILE_NOT_FOUND,"a missing shell backup is never fabricated");
+    backup_collision=1;
+    result=recovery_file(&config,"Explorer.exe",alias);
+    check(result==0 && file_text(collision_backup,"KEEP-BAK"),
+        "Win95 access-denied destination collisions preserve the old backup and allocate another");
+    check(result==0 && file_text(alias,"[boot]\r\nshell=Explorer.exe\r\n"),
+        "the newly reserved recovery file contains the complete original shell");
+    wsprintfA(pattern,"%s\\W95START.LOG",directory);
+    check(GetFileAttributesA(pattern)!=INVALID_FILE_ATTRIBUTES && equal_value(backup,"Owner",NULL),
+        "setup logging works before any owner metadata exists");
     wsprintfA(command,"\"%s\" /shell",copy); WritePrivateProfileStringA("boot","shell",command,ini);
     check(startup_configure(&config,TRUE)==ERROR_INVALID_DATA,"an alternate spelling of the proxy cannot become a recursive original shell");
     WritePrivateProfileStringA("boot","shell","EXPLOR95.EXE /desktop",ini);
     value(run,"Welcome95","FOREIGN.EXE");
     check(startup_configure(&config,TRUE)==ERROR_BUSY && equal_shell(ini,"EXPLOR95.EXE /desktop"),"another installation's entry prevents any shell modification");
     value(run,"Welcome95",NULL);
+    deny_flush_once=1;
+    check(startup_configure(&config,TRUE)==ERROR_ACCESS_DENIED && equal_shell(ini,"EXPLOR95.EXE /desktop") &&
+        equal_value(service,"Welcome95",NULL) && equal_value(run,"Welcome95",NULL),
+        "a genuine registry flush denial stops installation without activating the shell gate");
+    check(!lstrcmpA(startup_failure_stage(),"install-reg-backup-Valid-flush"),
+        "the failure identifies the exact registry operation instead of only access-denied");
+    check(file_contains(pattern,"install-reg-backup-Valid-flush code=5") &&
+        !file_contains(pattern,copy) && !file_contains(pattern,"EXPLOR95.EXE"),
+        "setup diagnostics contain the failed operation and code without executable paths or shell contents");
     fail_ini=1;
     check(startup_configure(&config,TRUE)!=0 && equal_shell(ini,"EXPLOR95.EXE /desktop"),"an INI write failure keeps the original shell");
     check(equal_value(run,"Welcome95",NULL) && equal_value(service,"Welcome95",NULL) && equal_value(once,"Welcome95",NULL),"failed installation rolls back all three owned startup values");
@@ -128,6 +219,7 @@ void startup_test_entry(void)
     fail_ini=2;
     check(startup_configure(&config,TRUE)!=0 && equal_shell(ini,"EXPLOR95.EXE /desktop"),"INI readback mismatch rolls back a write that claimed success");
     check(startup_configure(&config,TRUE)==0 && startup_installed(&config),"install the service, synchronous gate and shell proxy in the isolated fixture");
+    check(flush_calls>0 && denied_flushes==1,"every normal registry flush uses its required query access; only the injected denial failed");
     check(startup_original(&config,saved,sizeof(saved))==0 && !lstrcmpA(saved,"EXPLOR95.EXE /desktop"),"original shell parameters survive installation exactly");
     check(recovery_matches(backup,"EXPLOR95.EXE /desktop"),"the original shell is flushed to a unique readable BAK beside the executable");
     GetShortPathNameA(copy,alias,sizeof(alias)); config.executable=alias;

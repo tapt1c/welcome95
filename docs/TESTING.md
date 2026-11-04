@@ -435,3 +435,28 @@ On the Windows 95 VM:
    cancellation. Inspect both logs and font/boot/DOS files under LOGON.
 6. Compare Russian UI/GDI at VGA and larger modes. Actual Win95 rendering and
    native authentication remain target checks, beyond Wine fixtures.
+
+## Access-denied Enable regression and setup journal
+
+Current suite: 433 checks per resolution, including 64 startup checks. The startup
+test now includes the production module behind narrow Win32 API-contract
+adapters while using real private HKCU keys/files. Enforce RegFlushKey's
+KEY_QUERY_VALUE requirement; model ACCESS_DENIED on an existing destination.
+Inject one real flush denial separately: setup must fail before installing
+startup entries or activating the gate. The preceding dff7f7f source reproduces
+both contract failures; the corrected module passes.
+
+Verify that a backup-name collision preserves the existing file and allocates
+a different complete BAK, that initial setup creates W95START.LOG before any
+Owner value exists, and that a genuine denial reports
+install-reg-backup-Valid-flush/code 5 with no paths or shell contents in the log.
+The ordinary Wine registry implementation does not enforce the flush-rights
+contract, so an unadapted passing Wine run would miss this defect.
+
+Target Win95: update through the normal Disable/close/new EXE/Enable flow.
+If Enable still fails, retain the numeric error, exact stage from the dialog
+and %WINDIR%\LOGON\W95START.LOG. Do not discard original shell backups or
+manually overwrite foreign registry/file values. No target Enable has been
+executed in the cloud; the original screenshot identifies no exact failing API.
+
+API contract source: https://github.com/MicrosoftDocs/sdk-api/blob/docs/sdk-api-src/content/winreg/nf-winreg-regflushkey.md
