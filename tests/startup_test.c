@@ -2,7 +2,7 @@
 #include <windows.h>
 #include "../src/startup.h"
 static HANDLE output;
-static int failures,fail_ini;
+static int failures,fail_ini,fail_after;
 static void check(BOOL okay,const char *text)
 {
     DWORD written;
@@ -13,6 +13,7 @@ static void check(BOOL okay,const char *text)
 }
 static BOOL WINAPI test_write(LPCSTR section,LPCSTR key,LPCSTR value,LPCSTR path)
 {
+    if(section && fail_after>0 && !--fail_after) return FALSE;
     if(fail_ini==1) { fail_ini=0; return FALSE; }
     if(fail_ini==2) { fail_ini=0; return WritePrivateProfileStringA(section,key,"WRONG.EXE",path); }
     return WritePrivateProfileStringA(section,key,value,path);
@@ -54,6 +55,22 @@ static BOOL recovery_matches(const char *key,const char *shell)
     CloseHandle(file); data[read]=0; wsprintfA(expected,"[boot]\r\nshell=%s\r\n",shell);
     return read>0 && !lstrcmpA(data,expected);
 }
+static void write_fixture(const char *path,const char *text)
+{
+    DWORD written;
+    HANDLE file=CreateFileA(path,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,0,NULL);
+    if(file==INVALID_HANDLE_VALUE) ExitProcess(2);
+    if(!WriteFile(file,text,(DWORD)lstrlenA(text),&written,NULL)) ExitProcess(2);
+    CloseHandle(file);
+}
+static BOOL file_text(const char *path,const char *text)
+{
+    char buffer[80]; DWORD read=0; HANDLE file;
+    file=CreateFileA(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
+    if(file==INVALID_HANDLE_VALUE) return FALSE;
+    ReadFile(file,buffer,sizeof(buffer)-1,&read,NULL); CloseHandle(file); buffer[read]=0;
+    return !lstrcmpA(buffer,text);
+}
 static void remove_fixture(const char *directory)
 {
     WIN32_FIND_DATAA data; HANDLE search; char pattern[MAX_PATH],path[MAX_PATH];
@@ -72,7 +89,11 @@ void startup_test_entry(void)
 {
     static char temporary[MAX_PATH],directory[MAX_PATH],executable[MAX_PATH],copy[MAX_PATH],ini[MAX_PATH];
     static char base[128],service[160],run[160],once[160],backup[160],command[STARTUP_TEXT],saved[STARTUP_TEXT],other[32];
+    static char managed[MAX_PATH],managed_directory[MAX_PATH],marker[MAX_PATH],blocked[MAX_PATH],foreign[MAX_PATH],pattern[MAX_PATH];
     StartupConfig config;
+    StartupConfig managed_config;
+    BOOL copied,migrated;
+    HANDLE locked,search; WIN32_FIND_DATAA found;
     char alias[MAX_PATH],source_dir[MAX_PATH],source_exe[MAX_PATH];
     static const BYTE boot_image[32]={'M','Z',1,2,3};
     int index; BOOL ascii; DWORD result;
@@ -176,6 +197,60 @@ void startup_test_entry(void)
     check(startup_configure(&config,TRUE)==0 && equal_shell(ini,command),"repeated Enable reuses the active bootstrap");
     check(startup_configure(&config,FALSE)==0 && equal_shell(ini,NULL) && equal_value(service,"Welcome95",NULL),
         "Disable restores the original shell after bootstrap migration");
+    check(startup_prepare_logon(source_exe,directory,managed,&copied)==0 && copied &&
+        GetFileAttributesA(managed)!=INVALID_FILE_ATTRIBUTES && equal_shell(ini,NULL),
+        "install a non-ASCII source into private WINDOWS/LOGON before touching startup");
+    wsprintfA(managed_directory,"%s\\LOGON",directory); wsprintfA(marker,"%s\\W95FILES.INI",managed_directory);
+    check(file_text(marker,"Welcome95 LOGON\r\n"),"the managed directory has a validated ownership marker");
+    lstrcpyA(alias,managed);
+    check(startup_prepare_logon(alias,directory,managed,&copied)==0 && !copied,
+        "the installed executable does not copy or relaunch itself repeatedly");
+    locked=CreateFileA(managed,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
+    check(locked!=INVALID_HANDLE_VALUE && startup_prepare_logon(source_exe,directory,managed,&copied)!=0 &&
+        !copied && GetFileAttributesA(managed)!=INVALID_FILE_ATTRIBUTES && equal_shell(ini,NULL),
+        "a locked installed EXE prevents replacement without touching shell or deleting the working copy");
+    if(locked!=INVALID_HANDLE_VALUE) CloseHandle(locked);
+    check(startup_prepare_logon(source_exe,directory,managed,&copied)==0 && copied,
+        "an unlocked owned EXE can be updated through a staged copy");
+    wsprintfA(pattern,"%s\\E95*.BAK",managed_directory); search=FindFirstFileA(pattern,&found);
+    check(search!=INVALID_HANDLE_VALUE,"updating retains the previous executable in a unique LOGON backup");
+    if(search!=INVALID_HANDLE_VALUE) FindClose(search);
+    write_fixture(marker,"FOREIGN MARKER");
+    check(startup_prepare_logon(source_exe,directory,managed,&copied)==ERROR_INVALID_DATA && !copied,
+        "a changed ownership marker prevents overwriting a foreign installation");
+    write_fixture(marker,"Welcome95 LOGON\r\n");
+    wsprintfA(blocked,"%s\\BLOCKED",directory); CreateDirectoryA(blocked,NULL);
+    wsprintfA(foreign,"%s\\LOGON",blocked); CreateDirectoryA(foreign,NULL);
+    wsprintfA(foreign,"%s\\LOGON\\WELCOME95.EXE",blocked); write_fixture(foreign,"FOREIGN EXE");
+    check(startup_prepare_logon(source_exe,blocked,pattern,&copied)==ERROR_ALREADY_EXISTS &&
+        file_text(foreign,"FOREIGN EXE"),"an unowned destination executable is never replaced");
+    config.executable=source_exe;
+    check(startup_configure(&config,TRUE)==0,"prepare an enabled legacy desktop installation for managed migration");
+    GetPrivateProfileStringA("boot","shell","",command,sizeof(command),ini);
+    managed_config=config; managed_config.executable=managed; managed_config.boot_directory=managed_directory;
+    value(once,"Welcome95","FOREIGN.EXE");
+    check(startup_enable_managed(&managed_config,&migrated)==ERROR_BUSY && !migrated &&
+        equal_shell(ini,command) && equal_value(backup,"Owner",source_exe),
+        "managed migration preserves foreign startup values and the enabled legacy owner");
+    wsprintfA(saved,"\"%s\" /startup",command); value(once,"Welcome95",saved);
+    fail_after=2;
+    check(startup_enable_managed(&managed_config,&migrated)!=0 && !migrated && startup_installed(&config) &&
+        equal_shell(ini,command) && equal_value(backup,"Owner",source_exe) && equal_value(once,"Welcome95",saved),
+        "failed managed migration restores the previous owner, exact shell and startup entries");
+    check(startup_enable_managed(&managed_config,&migrated)==0 && migrated && startup_installed(&managed_config),
+        "managed migration enables the LOGON copy and redirects the ASCII bootstrap safely");
+    check(startup_original(&managed_config,saved,sizeof(saved))==0 && !lstrcmpA(saved,"Explorer.exe") &&
+        recovery_matches(backup,"Explorer.exe"),"managed migration preserves the actual original shell and readable recovery backup");
+    wsprintfA(pattern,"%s\\W95*.BAK",managed_directory); search=FindFirstFileA(pattern,&found);
+    check(search!=INVALID_HANDLE_VALUE,"new shell recovery backups are created inside LOGON");
+    if(search!=INVALID_HANDLE_VALUE) FindClose(search);
+    startup_trace(config.root,config.backup_key,"inert-managed-test",7);
+    wsprintfA(pattern,"%s\\W95START.LOG",managed_directory);
+    check(GetFileAttributesA(pattern)!=INVALID_FILE_ATTRIBUTES,"bootstrap stage logs use the managed owner directory instead of a root-drive folder");
+    check(startup_enable_managed(&managed_config,&migrated)==0 && !migrated,
+        "repeated managed Enable preserves the active installation");
+    check(startup_configure(&managed_config,FALSE)==0 && equal_shell(ini,NULL),
+        "Disable from LOGON restores the original absent shell key");
     RegDeleteKeyA(HKEY_CURRENT_USER,service); RegDeleteKeyA(HKEY_CURRENT_USER,run);
     RegDeleteKeyA(HKEY_CURRENT_USER,once); RegDeleteKeyA(HKEY_CURRENT_USER,backup); RegDeleteKeyA(HKEY_CURRENT_USER,base);
     remove_fixture(directory);

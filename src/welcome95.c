@@ -63,7 +63,7 @@ static DWORD provider_process;
 typedef DWORD (WINAPI *RegisterService)(DWORD,DWORD);
 static RegisterService register_service;
 static StartupConfig startup_config;
-static char system_ini[MAX_PATH],boot_directory[4];
+static char system_ini[MAX_PATH],boot_directory[MAX_PATH];
 static BOOL rescue_mode;
 static BOOL preview, finishing;
 static DWORD finish_time;
@@ -157,10 +157,10 @@ static void initialize_startup(void)
     if(!length || length+12>=sizeof(system_ini)) system_ini[0]=0;
     else lstrcatA(system_ini,"\\SYSTEM.INI");
     startup_config.boot_directory=NULL; startup_config.boot_image=NULL; startup_config.boot_size=0;
-    if(length>=3 && system_ini[1]==':' && system_ini[2]=='\\') {
+    if(system_ini[0] && length>=3 && system_ini[1]==':' && system_ini[2]=='\\') {
         HRSRC resource=FindResourceA(instance,MAKEINTRESOURCEA(300),MAKEINTRESOURCEA(10));
         HGLOBAL data=resource ? LoadResource(instance,resource) : NULL;
-        boot_directory[0]=system_ini[0]; boot_directory[1]=':'; boot_directory[2]='\\'; boot_directory[3]=0;
+        lstrcpynA(boot_directory,system_ini,length+1); lstrcatA(boot_directory,"\\LOGON");
         startup_config.boot_directory=boot_directory;
         startup_config.boot_image=data ? (const BYTE *)LockResource(data) : NULL;
         startup_config.boot_size=resource ? SizeofResource(instance,resource) : 0;
@@ -175,6 +175,7 @@ static BOOL configure(HWND owner,BOOL enable)
 {
     DWORD error;
     HANDLE event;
+    BOOL migrated=FALSE;
     char message[240];
     if(enable && !(GetVersion()&0x80000000UL)) {
         error_box(owner,ui_text("\300\342\362\356\347\340\357\363\361\352 \344\356\361\362\363\357\345\355 \362\356\353\374\352\356 \342 Windows 95/98/Me. \302 \344\360\363\343\350\365 \361\350\361\362\345\354\340\365 \344\356\361\362\363\357\345\355 \357\360\356\361\354\356\362\360.","Automatic startup is intended for Windows 95/98/Me. Preview is available on other systems.")); return FALSE;
@@ -183,18 +184,40 @@ static BOOL configure(HWND owner,BOOL enable)
     if(enable && (!startup_config.boot_directory || !startup_config.boot_image || !startup_config.boot_size)) {
         error_box(owner,ui_text("\315\345 \363\344\340\353\356\361\374 \347\340\343\360\363\347\350\362\374 \354\356\344\363\353\374 \347\340\357\363\361\352\340 Windows 95. \315\340\361\362\360\356\351\352\350 \340\342\362\356\347\340\357\363\361\352\340 \355\345 \350\347\354\345\355\345\355\373.","Cannot load the Windows 95 bootstrap. No startup changes made.")); return FALSE;
     }
-    error=startup_configure(&startup_config,enable);
+    error=enable ? startup_enable_managed(&startup_config,&migrated) : startup_configure(&startup_config,FALSE);
     if(error) {
         wsprintfA(message,ui_text("\315\345 \363\344\340\353\356\361\374 \350\347\354\345\355\350\362\374 \340\342\362\356\347\340\357\363\361\352 Welcome95 (\356\370\350\341\352\340 %lu).\r\n\320\345\347\345\360\342\355\340\377 \352\356\357\350\377 \357\360\345\346\355\345\351 \356\341\356\353\356\367\352\350 \361\356\365\360\340\355\345\355\340. \317\360\356\342\345\360\374\362\345 \363\361\362\340\355\356\342\352\363 \350 SYSTEM.INI \357\345\360\345\344 \357\356\342\362\356\360\355\356\351 \357\356\357\373\362\352\356\351.","Cannot update Welcome95 startup (error %lu).\r\nThe previous shell backup is retained. Check ownership and SYSTEM.INI before retrying."),error);
         error_box(owner,message); return FALSE;
     }
-    if(!enable) {
+    if(!enable || migrated) {
         event=OpenEventA(EVENT_MODIFY_STATE,FALSE,STOP_EVENT);
         if(event) { SetEvent(event); CloseHandle(event); }
         event=OpenEventA(EVENT_MODIFY_STATE,FALSE,CLOSED_EVENT);
         if(event) { SetEvent(event); CloseHandle(event); }
     }
     return TRUE;
+}
+
+/* Settings launched from a download/Desktop run their managed copy. Previews
+   and startup helper modes never install or change the system configuration. */
+static int managed_settings(void)
+{
+    char windows[MAX_PATH],target[MAX_PATH],command[MAX_PATH+4],message[240];
+    STARTUPINFOA startup={0}; PROCESS_INFORMATION child;
+    DWORD error,length; BOOL copied=FALSE;
+    length=GetWindowsDirectoryA(windows,sizeof(windows));
+    error=!length || length>=sizeof(windows) ? ERROR_PATH_NOT_FOUND :
+        startup_prepare_logon(exe_path,windows,target,&copied);
+    if(!error && !copied) return -1;
+    if(!error) {
+        startup.cb=sizeof(startup); wsprintfA(command,"\"%s\"",target);
+        if(CreateProcessA(target,command,NULL,NULL,FALSE,0,NULL,NULL,&startup,&child)) {
+            CloseHandle(child.hThread); CloseHandle(child.hProcess); return 0;
+        }
+        error=GetLastError();
+    }
+    wsprintfA(message,ui_text("\315\345 \363\344\340\353\356\361\374 \363\361\362\340\355\356\342\350\362\374 Welcome95 \342 \357\340\357\352\363 Windows\\LOGON (\356\370\350\341\352\340 %lu).\r\n\316\362\352\353\376\367\350\362\345 \361\362\340\360\363\376 \342\345\360\361\350\376 \350 \347\340\352\360\356\351\362\345 Welcome95 \357\345\360\345\344 \356\341\355\356\342\353\345\355\350\345\354.","Cannot install Welcome95 in Windows\\LOGON (error %lu).\r\nDisable the old version and close Welcome95 before updating."),error);
+    error_box(NULL,message); return 1;
 }
 
 /* A shell/startup gate runs in the newly logged-on user's environment. */
@@ -894,12 +917,12 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             }
         }
         if (LOWORD(wp) == ID_SUBMIT) {
-            if (preview) { finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd, profiles_count()>1 ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE); }
+            if (preview) { finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd,VIEW_WELCOME_MULTI); }
             else if (!pending_profile) native_logon_submit();
         }
         if (LOWORD(wp) == ID_POWER) show_power_dialog(hwnd);
         if (preview && LOWORD(wp) == ID_DONE && !finishing) {
-            finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd, profiles_count()>1 ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE);
+            finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd,VIEW_WELCOME_MULTI);
         }
         if (LOWORD(wp) == ID_NATIVE && login_window) {
             prefer_native = TRUE;
@@ -918,7 +941,8 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         }
         if(power_dialog_active()) return 0;
         if (sign_in_view() && !finishing && ready_event && WaitForSingleObject(ready_event, 0) == WAIT_OBJECT_0) {
-            finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd, profiles_count()>1 ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE);
+            int loading_view=profiles_count()>1 || status_view==VIEW_LOGIN ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE;
+            finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd,loading_view);
         }
         if (finishing && (DWORD)(GetTickCount() - finish_time) >= 1000) {
             if(resident_mode) { session_running=TRUE; close_canvas(); }
@@ -1154,10 +1178,10 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
         child=CreateWindowA("STATIC",ui_text("\317\360\356\361\354\356\362\360 \375\352\360\340\355\356\342:","Preview screens:"),WS_CHILD|WS_VISIBLE,10,133,384,14,hwnd,NULL,instance,NULL);
         SendMessageA(child,WM_SETFONT,(WPARAM)settings_font,TRUE);
         button(hwnd,ui_text("\307\340\357\363\361\352","Starting"),ID_PREVIEW_STARTING,10,152,90);
-        button(hwnd,ui_text("\316\344\350\355 \340\352\352\340\363\355\362","One user"),ID_PREVIEW_SINGLE,108,152,90);
-        button(hwnd,ui_text("\315\345\361\352\356\353\374\352\356","Many users"),ID_PREVIEW_MULTI,206,152,90);
+        button(hwnd,ui_text("\301\345\347 \357\340\360\356\353\377","No password"),ID_PREVIEW_SINGLE,108,152,90);
+        button(hwnd,ui_text("\321 \352\340\360\362\356\367\352\356\351","With account"),ID_PREVIEW_MULTI,206,152,90);
         button(hwnd,ui_text("\302\373\352\353\376\367\345\355\350\345","Shutdown"),ID_PREVIEW_SHUTDOWN,304,152,90);
-        child=CreateWindowA("STATIC",ui_text("\315\345 \357\345\360\345\354\345\371\340\351\362\345 \363\361\362\340\355\356\342\353\345\355\355\373\351 EXE.","Keep the installed EXE at its current path."),WS_CHILD|WS_VISIBLE,10,184,384,14,hwnd,NULL,instance,NULL);
+        child=CreateWindowA("STATIC",ui_text("\324\340\351\353\373: %WINDIR%\\LOGON.","Files: %WINDIR%\\LOGON."),WS_CHILD|WS_VISIBLE,10,184,384,14,hwnd,NULL,instance,NULL);
         SendMessageA(child,WM_SETFONT,(WPARAM)settings_font,TRUE);
         update_settings(hwnd); return 0;
     case WM_COMMAND:
@@ -1214,6 +1238,10 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
     length = GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
     if (!length || length >= sizeof(exe_path) - 1) return 1;
     initialize_startup();
+    if(!*arguments && (GetVersion()&0x80000000UL)) {
+        int result=managed_settings();
+        if(result>=0) return result;
+    }
     if(!lstrcmpiA(arguments,"/shell") || !lstrcmpiA(arguments,"/startup")) {
         DWORD error;
         if(!(GetVersion()&0x80000000UL)) return 1;

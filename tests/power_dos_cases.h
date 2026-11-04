@@ -70,13 +70,15 @@ static DWORD DosLaunch(HWND owner,const char *path)
 static void ShutdownDosTests(const char *directory)
 {
     ShutdownDosHost host={DosOpen,DosGet,DosSet,DosClose,DosLaunch};
-    char windows[MAX_PATH],command[MAX_PATH],stock[MAX_PATH],parent[MAX_PATH],sentinel[4]; HANDLE file; DWORD result,size; int i,end;
+    char windows[MAX_PATH],logon[MAX_PATH],command[MAX_PATH],stock[MAX_PATH],parent[MAX_PATH],sentinel[4]; HANDLE file; DWORD result,size; int i,end;
     const DWORD win95=0x80000004UL; HWND owner=(HWND)(UINT_PTR)1234;
-    wsprintfA(windows,"%s\\dos-windows",directory); check(CreateDirectoryA(windows,NULL),"create an isolated Windows-directory fixture");
+    wsprintfA(windows,"%s\\dos-windows",directory);
+    wsprintfA(logon,"%s\\LOGON",windows);
+    check(CreateDirectoryA(windows,NULL) && CreateDirectoryA(logon,NULL),"create an isolated Windows/LOGON directory fixture");
     dosOpens=dosLaunches=0;
-    check(ShutdownDosPrepare(owner,10,windows,directory,&host)==ERROR_NOT_SUPPORTED && !dosOpens && !dosLaunches,
+    check(ShutdownDosPrepare(owner,10,windows,logon,&host)==ERROR_NOT_SUPPORTED && !dosOpens && !dosLaunches,
           "DOS preparation cannot invoke native APIs or launch on NT");
-    check(ShutdownDosPrepare(owner,win95,windows,directory,&host)==ERROR_FILE_NOT_FOUND && !dosOpens,
+    check(ShutdownDosPrepare(owner,win95,windows,logon,&host)==ERROR_FILE_NOT_FOUND && !dosOpens,
           "a missing command processor reports an error instead of a placeholder dialog");
     wsprintfA(command,"%s\\COMMAND.COM",windows);
     file=CreateFileA(command,GENERIC_WRITE,0,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,NULL);
@@ -87,7 +89,7 @@ static void ShutdownDosTests(const char *directory)
     check(file!=INVALID_HANDLE_VALUE && WriteFile(file,"KEEP",4,&size,NULL),"protect a fake existing system PIF with a sentinel"); CloseHandle(file);
     for(i=0;i<9;++i) {
         dosPhase=i; dosOpens=dosLaunches=dosDiscards=0; dosPif[0]=0;
-        result=ShutdownDosPrepare(owner,win95,windows,directory,&host);
+        result=ShutdownDosPrepare(owner,win95,windows,logon,&host);
         check((i==0 ? result==0 : result!=0) && dosLaunches==(i==0 || i==7),
               "only fully saved and verified real-mode properties reach the inert launch callback");
         lstrcpyA(parent,dosPif); end=lstrlenA(parent);
@@ -103,5 +105,5 @@ static void ShutdownDosTests(const char *directory)
     file=CreateFileA(stock,GENERIC_READ,0,NULL,OPEN_EXISTING,0,NULL);
     check(file!=INVALID_HANDLE_VALUE && GetFileSize(file,NULL)==4 && ReadFile(file,sentinel,4,&size,NULL) &&
           sentinel[0]=='K' && sentinel[3]=='P',"the existing system PIF remains unchanged"); CloseHandle(file);
-    check(DeleteFileA(stock) && DeleteFileA(command) && RemoveDirectoryA(windows),"remove only our isolated DOS fixtures");
+    check(DeleteFileA(stock) && DeleteFileA(command) && RemoveDirectoryA(logon) && RemoveDirectoryA(windows),"remove only our isolated DOS fixtures");
 }

@@ -394,3 +394,44 @@ The rebuilt main/boot PEs pass the compatibility audit. The full 407-check Wine
 suite passed at 640×480×24 for the placement correction; rendering 7/UI 16 checks
 passed again after restoring the original status-font size and right alignment. Real Win95 GDI
 rasterization remains a target check.
+
+## Managed LOGON installation and manual single-account loading
+
+Current suite: 426 checks per resolution, passed under Wine64/Xvfb at
+640×480×16, 800×600×24 and 1024×768×24. Includes 57 startup, 46 layout, 10 font and 51
+session checks. Production main/boot PE audits pass (174/50 reviewed imports);
+new CopyFileA/ReadFile imports are baseline Win95 file APIs.
+
+The layout fixture now sets a private OS-ready event after manual fallback with
+exactly one profile: the named loading card must appear, the closed event must
+remain unset. Existing quiet-start checks still require the lone greeting.
+The screenshot docs/previews/manual-single-640-en.png is an inert actual Wine
+window following this same transition with one synthetic Daniel account.
+
+Startup filesystem tests copy a non-ASCII source into a private WINDOWS/LOGON
+with no boot changes, validate ownership, prevent repeated self-copy, preserve
+a locked or foreign EXE, retain a unique previous-EXE backup and reject changed
+markers. Private HKCU startup tests migrate an active legacy install, reject
+foreign entries, simulate failure of the new shell write after legacy Disable,
+and verify restoration of exact owner/shell/startup metadata. Success must
+preserve the original shell and create new recovery files/journal inside LOGON.
+A separate managed font process must load/clean all resources within LOGON.
+DOS PIF tests use a private Windows/LOGON directory and inert launch callbacks.
+No real startup, authentication, DOS or power operation is performed by tests.
+
+On the Windows 95 VM:
+
+1. Start the new download from Desktop; verify settings now run from
+   %WINDIR%\LOGON\WELCOME95.EXE. Press Enable, reboot and inspect SYSTEM.INI's
+   ASCII bootstrap route plus the original-shell recovery BAK inside LOGON.
+2. Install over an enabled old Desktop copy, then Disable/re-enable from LOGON.
+   Original shell/parameters must survive. Retain old backups/cached loaders.
+3. Update after Disable/closing settings; expect a unique E95xxxx.BAK in LOGON.
+   A busy or foreign destination must fail before changing startup.
+4. One protected account: type the password, verify greeting plus selected name,
+   avatar/loading text, then the usual delayed shell handoff. One passwordless
+   account: quiet startup then lone greeting, without manual input.
+5. Repeat wrong-password recovery, hidden native rescue, logoff/relogon and power
+   cancellation. Inspect both logs and font/boot/DOS files under LOGON.
+6. Compare Russian UI/GDI at VGA and larger modes. Actual Win95 rendering and
+   native authentication remain target checks, beyond Wine fixtures.

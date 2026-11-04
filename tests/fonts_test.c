@@ -48,6 +48,21 @@ void fonts_test_entry(void)
     HGDIOBJ old;
     TEXTMETRICA metrics;
     char directory[MAX_PATH], face[64];
+    char parent[MAX_PATH],temporary[MAX_PATH],copy[MAX_PATH],module[MAX_PATH],command[MAX_PATH+24];
+    const char *arguments=GetCommandLineA();
+    int length=lstrlenA(arguments),end;
+    STARTUPINFOA startup={0}; PROCESS_INFORMATION child;
+    DWORD code=1; BOOL okay;
+    if(length>=14 && !lstrcmpA(arguments+length-14,"/managed-fonts")) {
+        GetModuleFileNameA(NULL,parent,sizeof(parent)); end=lstrlenA(parent);
+        while(end && parent[end-1]!='\\') --end;
+        parent[end]=0;
+        okay=bundled_fonts_load(instance)==4;
+        lstrcpynA(directory,bundled_fonts_directory(),sizeof(directory));
+        for(end=0;parent[end];++end) if(directory[end]!=parent[end]) okay=FALSE;
+        bundled_fonts_release();
+        ExitProcess(okay && GetFileAttributesA(directory)==INVALID_FILE_ATTRIBUTES ? 0 : 1);
+    }
     log_file = CreateFileA("fonts-test.log", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (log_file == INVALID_HANDLE_VALUE) ExitProcess(2);
     check(bundled_fonts_load(instance) == 4, "extract and register all four supplied TTF resources");
@@ -72,6 +87,20 @@ void fonts_test_entry(void)
     bundled_fonts_release();
     check(GetFileAttributesA(directory) == INVALID_FILE_ATTRIBUTES, "unregister fonts and remove owned temporary files");
     check(bundled_fonts_load(instance) == 4, "font setup can be repeated after cleanup");
-    bundled_fonts_release(); CloseHandle(log_file);
+    bundled_fonts_release();
+    if(!GetTempPathA(MAX_PATH,temporary) || !GetTempFileNameA(temporary,"WFT",0,parent) ||
+        !DeleteFileA(parent) || !CreateDirectoryA(parent,NULL)) ExitProcess(2);
+    wsprintfA(directory,"%s\\LOGON",parent); CreateDirectoryA(directory,NULL);
+    wsprintfA(copy,"%s\\fonttest.exe",directory); GetModuleFileNameA(NULL,module,sizeof(module));
+    okay=CopyFileA(module,copy,TRUE); startup.cb=sizeof(startup);
+    wsprintfA(command,"\"%s\" /managed-fonts",copy);
+    if(okay && CreateProcessA(copy,command,NULL,NULL,FALSE,0,NULL,directory,&startup,&child)) {
+        okay=WaitForSingleObject(child.hProcess,20000)==WAIT_OBJECT_0 && GetExitCodeProcess(child.hProcess,&code) && !code;
+        CloseHandle(child.hThread); CloseHandle(child.hProcess);
+    } else okay=FALSE;
+    okay=DeleteFileA(copy) && okay;
+    okay=RemoveDirectoryA(directory) && okay; okay=RemoveDirectoryA(parent) && okay;
+    check(okay,"a managed LOGON process extracts fonts beneath its own directory and removes all temporary font files");
+    CloseHandle(log_file);
     ExitProcess(failures ? 1 : 0);
 }

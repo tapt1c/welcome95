@@ -143,6 +143,11 @@ void layout_test_entry(void)
     set_status_view(screen,VIEW_STARTING); service_single_pending();
     check(status_view==VIEW_LOGIN && automatic_attempted && IsWindowVisible(GetDlgItem(screen,ID_POWER)),
         "a missing or stalled provider restores the full login and power controls after bounded waiting");
+    SetEvent(ready_event); SendMessageA(screen,WM_TIMER,TICK,0);
+    check(finishing && status_view==VIEW_WELCOME_MULTI && profiles_count()==1 &&
+        WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+        "one account after manual password entry shows the named loading card before shell release");
+    ResetEvent(ready_event); finishing=FALSE; set_status_view(screen,VIEW_LOGIN);
     CloseHandle(ready_event); CloseHandle(closed_event); ready_event=closed_event=NULL;
     native_logon_attach(dialog,x,y,width);
     i=submits; profiles_remember("Second"); automatic_attempted=FALSE;

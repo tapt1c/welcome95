@@ -21,7 +21,7 @@ Stand By is optional: power functions are resolved dynamically. Turn Off and
 Restart use non-forced ExitWindowsEx. MS-DOS restart is a separate Win95-only PIF
 path and never falls back to ordinary shutdown on preparation failure. The
 system's existing PIFs and boot configuration are not modified. A successfully
-dispatched PIF remains in its private TEMP directory because Windows may read it
+dispatched PIF remains in its private directory beneath %WINDIR%\LOGON because Windows may read it
 asynchronously; failed preparations remove only their own files.
 
 The shade/choice windows close and input is restored before dispatch. Save,
@@ -41,3 +41,9 @@ Russian choice labels use 10px Tahoma Bold: the supplied XP font measures
 "Ждущий режим" at 90px with the former 11px setting, beyond the fixed 88px
 column. The dialog/icon/control dimensions are unchanged. CP1251 UI tests measure
 the actual single-line label area and cover all three power choices.
+
+
+Managed installation keeps successful DOS PIFs in unique subdirectories beneath
+%WINDIR%\LOGON instead of TEMP. The PIF protocol, verification, asynchronous
+retention and failure cleanup are unchanged. Inert DOS tests now use a private
+Windows/LOGON fixture. No real DOS or power request is made by the tests.

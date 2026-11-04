@@ -20,7 +20,8 @@ The application uses GDI point-to-pixel conversion at the current device DPI.
 Actual rasterization still depends on OS font mapping and smoothing.
 
 The four files are embedded as RCDATA. The application extracts its own uniquely
-named temporary directory, calls the Windows 95 AddFontResource API, creates
+named temporary directory beneath LOGON when running the managed copy (TEMP
+for portable previews), calls the Windows 95 AddFontResource API, creates
 its UI fonts, then deletes font objects, unregisters resources and removes owned
 temporary files on normal exit. It does not alter the installed-font registry.
 Windows 95 has no private-font equivalent to modern AddFontResourceEx flags;

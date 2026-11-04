@@ -34,8 +34,21 @@ int bundled_fonts_load(HINSTANCE instance)
     HGLOBAL memory;
     const void *data;
     HANDLE file;
-    length = GetTempPathA(sizeof(temp), temp);
-    if (!length || length >= sizeof(temp)-32 || *directory) return 0;
+    int end,start;
+    BOOL managed=FALSE;
+    if(*directory) return 0;
+    length=GetModuleFileNameA(NULL,temp,sizeof(temp));
+    if(length && length<sizeof(temp)) {
+        end=(int)length;
+        while(end && temp[end-1]!='\\' && temp[end-1]!='/') --end;
+        if(end) {
+            temp[end-1]=0; start=end-1;
+            while(start && temp[start-1]!='\\' && temp[start-1]!='/') --start;
+            managed=!lstrcmpiA(temp+start,"LOGON"); length=(DWORD)(end-1);
+        }
+    }
+    if(!managed) length=GetTempPathA(sizeof(temp),temp);
+    if(!length || length>=sizeof(temp)-32) return 0;
     if (!GetTempFileNameA(temp, "W95", 0, directory)) return 0;
     /* GetTempFileName creates an owned placeholder. Never reuse or overwrite
        existing font files; each process creates its own fresh directory. */

@@ -107,6 +107,81 @@ static BOOL same_executable(const char *first,const char *second)
     if(!lstrcmpiA(first,second)) return TRUE;
     return GetShortPathNameA(first,a,sizeof(a)) && GetShortPathNameA(second,b,sizeof(b)) && !lstrcmpiA(a,b);
 }
+/* Tests supply a private Windows directory, never the real boot configuration. */
+DWORD startup_prepare_logon(const char *source,const char *windows_directory,char *target,BOOL *copied)
+{
+    static const char signature[]="Welcome95 LOGON\r\n";
+    char directory[MAX_PATH],marker_path[MAX_PATH],stage[MAX_PATH],old_file[MAX_PATH],reserve[MAX_PATH],text[32];
+    DWORD attributes,error=0,count,written;
+    HANDLE marker=INVALID_HANDLE_VALUE;
+    BOOL new_directory=FALSE,new_marker=FALSE,same,old_moved=FALSE;
+    int length,attempt;
+    *copied=FALSE; target[0]=0; stage[0]=old_file[0]=0;
+    if(!source || !windows_directory || !*windows_directory || lstrlenA(windows_directory)+24>=MAX_PATH)
+        return ERROR_FILENAME_EXCED_RANGE;
+    attributes=GetFileAttributesA(source);
+    if(attributes==INVALID_FILE_ATTRIBUTES) return GetLastError();
+    if(attributes&FILE_ATTRIBUTE_DIRECTORY) return ERROR_DIRECTORY;
+    lstrcpyA(directory,windows_directory); length=lstrlenA(directory);
+    while(length && (directory[length-1]=='\\' || directory[length-1]=='/')) directory[--length]=0;
+    lstrcatA(directory,"\\LOGON"); wsprintfA(target,"%s\\WELCOME95.EXE",directory);
+    wsprintfA(marker_path,"%s\\W95FILES.INI",directory);
+    attributes=GetFileAttributesA(directory);
+    if(attributes==INVALID_FILE_ATTRIBUTES) {
+        if(!CreateDirectoryA(directory,NULL)) return GetLastError();
+        new_directory=TRUE;
+    } else if(!(attributes&FILE_ATTRIBUTE_DIRECTORY)) return ERROR_DIRECTORY;
+    same=same_executable(source,target);
+    attributes=GetFileAttributesA(target);
+    if(attributes!=INVALID_FILE_ATTRIBUTES && (attributes&FILE_ATTRIBUTE_DIRECTORY)) { error=ERROR_ALREADY_EXISTS; goto done; }
+    if(!same && attributes!=INVALID_FILE_ATTRIBUTES && GetFileAttributesA(marker_path)==INVALID_FILE_ATTRIBUTES) {
+        error=ERROR_ALREADY_EXISTS; goto done;
+    }
+    /* Marker ownership also serializes installers; a crash releases the handle. */
+    marker=CreateFileA(marker_path,GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ,NULL,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(marker==INVALID_HANDLE_VALUE) { error=GetLastError(); goto done; }
+    new_marker=GetLastError()!=ERROR_ALREADY_EXISTS;
+    if(new_marker) {
+        if(!WriteFile(marker,signature,sizeof(signature)-1,&written,NULL) || written!=sizeof(signature)-1 || !FlushFileBuffers(marker)) {
+            error=ERROR_WRITE_FAULT; goto done;
+        }
+    } else {
+        if(!ReadFile(marker,text,sizeof(text)-1,&count,NULL)) { error=GetLastError(); goto done; }
+        text[count]=0;
+        if(count!=sizeof(signature)-1 || lstrcmpA(text,signature)) { error=ERROR_INVALID_DATA; goto done; }
+    }
+    if(same) goto done;
+    if(!GetTempFileNameA(directory,"W95",0,stage)) { error=GetLastError(); goto done; }
+    if(!CopyFileA(source,stage,FALSE)) { error=GetLastError(); goto done; }
+    if(attributes!=INVALID_FILE_ATTRIBUTES) {
+        for(attempt=0;attempt<64;++attempt) {
+            if(!GetTempFileNameA(directory,"E95",0,reserve)) { error=GetLastError(); goto done; }
+            lstrcpyA(old_file,reserve); length=lstrlenA(old_file);
+            old_file[length-3]='B'; old_file[length-2]='A'; old_file[length-1]='K';
+            if(MoveFileA(reserve,old_file)) break;
+            error=GetLastError(); DeleteFileA(reserve);
+            if(error!=ERROR_ALREADY_EXISTS && error!=ERROR_FILE_EXISTS) goto done;
+        }
+        if(attempt==64) goto done;
+        error=0;
+        if(!DeleteFileA(old_file)) { error=GetLastError(); goto done; }
+        /* MoveFile refuses collisions and a running destination on Win95. */
+        if(!MoveFileA(target,old_file)) { error=GetLastError(); goto done; }
+        old_moved=TRUE;
+    }
+    if(!MoveFileA(stage,target)) {
+        error=GetLastError();
+        if(old_moved && !MoveFileA(old_file,target)) error=ERROR_CAN_NOT_COMPLETE;
+        goto done;
+    }
+    stage[0]=0; *copied=TRUE;
+done:
+    if(stage[0]) DeleteFileA(stage);
+    if(marker!=INVALID_HANDLE_VALUE) CloseHandle(marker);
+    if(error && new_marker) DeleteFileA(marker_path);
+    if(error && new_directory) RemoveDirectoryA(directory);
+    return error;
+}
 static BOOL owned_command(const StartupConfig *c,const char *text,const char *option)
 {
     char module[MAX_PATH],boot[MAX_PATH];
@@ -306,6 +381,41 @@ failed:
     return 0;
 }
 
+/* Relocation restores previous metadata, startup entries and shell on failure. */
+DWORD startup_enable_managed(const StartupConfig *c,BOOL *migrated)
+{
+    static const char *names[]={"Owner","OriginalShell","HadShell","Gate","RecoveryFile","Valid"};
+    static Entry owner,valid,metadata[6],entries[3],shell;
+    const char *keys[3];
+    StartupConfig previous;
+    DWORD error,part,rollback=0;
+    int i;
+    *migrated=FALSE;
+    error=startup_configure(c,TRUE);
+    if(error!=ERROR_BUSY) return error;
+    if(read_string(c,c->backup_key,"Owner",&owner) || !owner.present || same_executable(owner.text,c->executable) ||
+       read_string(c,c->backup_key,"Valid",&valid) || !valid.present || lstrcmpA(valid.text,"1")) return ERROR_BUSY;
+    keys[0]=c->service_key; keys[1]=c->run_key; keys[2]=c->once_key;
+    for(i=0;i<6;++i) { error=read_string(c,c->backup_key,names[i],&metadata[i]); if(error) return error; }
+    for(i=0;i<3;++i) { error=read_string(c,keys[i],VALUE,&entries[i]); if(error) return error; }
+    error=read_shell(c,&shell); if(error) return error;
+    previous=*c; previous.executable=owner.text;
+    error=startup_configure(&previous,FALSE); if(error) return error;
+    error=startup_configure(c,TRUE);
+    if(!error) { *migrated=TRUE; return 0; }
+    part=put_string(c,c->backup_key,"Valid",NULL); if(part) rollback=part;
+    for(i=0;i<6;++i) {
+        part=put_string(c,c->backup_key,names[i],metadata[i].present ? metadata[i].text : NULL);
+        if(part) rollback=part;
+    }
+    for(i=0;i<3;++i) {
+        part=put_string(c,keys[i],VALUE,entries[i].present ? entries[i].text : NULL);
+        if(part) rollback=part;
+    }
+    part=set_shell(c,shell.present ? shell.text : NULL); if(part) rollback=part;
+    return rollback ? ERROR_CAN_NOT_COMPLETE : error;
+}
+
 /* Best-effort bounded metadata journal; no commands, usernames or edit contents. */
 void startup_trace(HKEY root,const char *key,const char *stage,DWORD code)
 {
@@ -315,12 +425,11 @@ void startup_trace(HKEY root,const char *key,const char *stage,DWORD code)
     int end;
     if(RegOpenKeyExA(root,key,0,KEY_QUERY_VALUE,&handle)) return;
     type=0;
-    if(RegQueryValueExA(handle,"Gate",NULL,&type,(BYTE *)path,&size) || type!=REG_SZ || !size || size>=sizeof(path)) {
+    if(RegQueryValueExA(handle,"Owner",NULL,&type,(BYTE *)path,&size) || type!=REG_SZ || !size || size>=sizeof(path) || path[size-1]) {
         RegCloseKey(handle); return;
     }
     RegCloseKey(handle); path[sizeof(path)-1]=0;
-    /* A legacy Gate contains arguments; the new bootstrap path has none. */
-    end=0; while(path[end] && path[end]!=' ') ++end;
+    end=lstrlenA(path);
     while(end && path[end-1]!='\\' && path[end-1]!='/') --end;
     if(!end || end+13>=MAX_PATH) return;
     lstrcpyA(path+end,"W95START.LOG");

@@ -16,6 +16,8 @@ typedef struct {
     BOOL (WINAPI *write_ini)(LPCSTR,LPCSTR,LPCSTR,LPCSTR);
 } StartupConfig;
 DWORD startup_configure(const StartupConfig *config,BOOL enable);
+DWORD startup_prepare_logon(const char *source,const char *windows_directory,char *target,BOOL *copied);
+DWORD startup_enable_managed(const StartupConfig *config,BOOL *migrated);
 BOOL startup_installed(const StartupConfig *config);
 DWORD startup_original(const StartupConfig *config,char *command,DWORD capacity);
 DWORD startup_rearm(const StartupConfig *config);

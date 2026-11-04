@@ -387,7 +387,7 @@ still requires visual confirmation on the user's display.
 
 The user requested a smaller Russian greeting, no chooser for one passwordless
 account, and denser settings; then chose the existing status-screen composition
-for the pending phase. VIEW_STARTING now shows Windows95 artwork 40px right of
+for the pending phase. VIEW_STARTING now shows Windows 95 artwork 40px right of
 center (latest user annotation) and truthful “Запуск Windows...” / “Windows is starting up...” text with the XP bars
 and glow. No invented RPCSS/service stage is displayed. The separate confirmed
 Welcome still follows only the real OS readiness signal. Native validation owns
@@ -439,3 +439,48 @@ Russian UI checks passed again; the UI test now measures the actual 344px status
 area. Actual startup/shutdown screenshots were inspected; both visible status
 strings end at x=469 under Wine. Main/bootstrap PE audits pass. Real Win95 font
 rasterization remains a target-system check.
+
+## Manual single-account loading and managed Windows/LOGON install (current)
+
+The user's 10-second VM recording shows a single Daniel password card followed
+by only the lone greeting. Confirmed cause: ready-event handling chose the
+greeting solely by profile count. It now preserves the distinction between
+quiet VIEW_STARTING and manual VIEW_LOGIN. After manual entry, one account uses
+the same named loading card as the XP reference. Quiet passwordless acceptance
+still uses a lone greeting. Both await the real OS-ready event; native input,
+minimum loading delay and shell/close gates are unchanged. Manual preview also
+shows the card. Preview captions now distinguish No password / With account.
+
+No-argument launches on Win9x copy/relaunch settings under %WINDIR%\LOGON before
+font loading. Helpers/previews/NT settings do not install. W95FILES.INI validates
+ownership and serializes installers via an open file handle. Source copy is
+staged; updates retain E95xxxx.BAK, locked/foreign/invalid destinations refuse
+replacement, and copy/rename errors preserve the old executable. Enable migrates
+a known legacy Welcome95 Owner only after its startup/shell ownership checks.
+A failed migration restores six exact metadata values, three startup values and
+the previous shell; unrelated entries/external shell changes remain protected.
+Successful migration stops legacy observers and takes effect after reboot.
+
+New EXE, diagnostics, W95START.LOG, shell/EXE backups and private font/DOS PIF/boot
+subdirectories all live under LOGON. The journal derives its directory from
+Owner rather than Gate. Old files remain available for recovery/cached calls.
+No recursive deletion or system PWL/font/profile modifications are introduced.
+CopyFileA and ReadFile are baseline Win95 KERNEL32 file APIs; both are explicitly
+reviewed in the PE whitelist. Production main/boot remain i386/PE4.0/no CRT.
+
+Validation: 426 checks per resolution at 640×480×16, 800×600×24 and 1024×768×24 under
+Wine64/Xvfb: 57 startup, 46 layout, 10 font and 51 session checks among existing
+suites. Startup tests use private HKCU/INI/files with a non-ASCII source, owned
+updates, locked/foreign destinations, rollback and recovery backups. A separate
+LOGON font process proves font extraction/cleanup remains inside its own folder.
+DOS tests use a private Windows/LOGON fixture and never execute DOS/power. The
+manual loading screenshot is an actual inert Wine window with one synthetic
+Daniel profile and private ready/closed events; it does not authenticate.
+
+- [ ] Repeat first installation and update from Desktop on real Windows 95.
+- [ ] Verify LOGON ownership, both logs, recovery file, DOS/boot/font directories
+      and saved original shell on the VM, including disable/re-enable and reboot.
+- [ ] Verify one protected account shows the named card after successful input;
+      one passwordless automatic account still shows only the greeting.
+- [ ] Recheck wrong-password retry, rescue, logoff/relogon and shell/autostart delay
+      on the real providers. Wine tests do not establish actual Win95 boot/GDI.

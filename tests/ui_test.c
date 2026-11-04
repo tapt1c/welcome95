@@ -67,8 +67,8 @@ void ui_test_entry(void)
         "startup action buttons are fully Russian");
     check(same_text(GetDlgItem(settings,ID_PREVIEW),"\317\360\356\361\354\356\362\360") && same_text(GetDlgItem(settings,ID_EXIT),"\307\340\352\360\373\362\374"),
         "preview and close buttons are fully Russian");
-    check(same_text(GetDlgItem(settings,ID_PREVIEW_SINGLE),"\316\344\350\355 \340\352\352\340\363\355\362") &&
-        same_text(GetDlgItem(settings,ID_PREVIEW_MULTI),"\315\345\361\352\356\353\374\352\356") && same_text(GetDlgItem(settings,ID_PREVIEW_SHUTDOWN),"\302\373\352\353\376\367\345\355\350\345"),
+    check(same_text(GetDlgItem(settings,ID_PREVIEW_SINGLE),"\301\345\347 \357\340\360\356\353\377") &&
+        same_text(GetDlgItem(settings,ID_PREVIEW_MULTI),"\321 \352\340\360\362\356\367\352\356\351") && same_text(GetDlgItem(settings,ID_PREVIEW_SHUTDOWN),"\302\373\352\353\376\367\345\355\350\345"),
         "all status preview buttons are fully Russian");
     check(same_text(GetDlgItem(settings,ID_PREVIEW_STARTING),"\307\340\357\363\361\352"),"the startup preview button is Russian");
     check(same_text(GetDlgItem(settings,200),"\321\356\361\362\356\377\355\350\345: \356\362\352\353\376\367\345\355\356 \344\353\377 \375\362\356\351 \352\356\357\350\350 \357\360\356\343\360\340\354\354\373"),"startup status is fully Russian");

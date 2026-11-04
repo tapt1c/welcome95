@@ -218,3 +218,22 @@ timeout returns manual input without retrying, dismissing native errors or
 clearing subsequent input. Posted OK is not session readiness. Keep the real OS
 ready event and post-DestroyWindow close acknowledgement. /preview-starting is
 inert. Test probing-to-manual reattachment, including shutdown cancellation.
+
+
+## Managed LOGON installation and manual single-account welcome
+
+Interactive no-argument launches on Win9x prepare %WINDIR%\LOGON\WELCOME95.EXE
+and relaunch settings there before loading fonts. Helper and preview modes must
+not install. Validate the ownership marker, stage copies, retain unique old EXE
+backups and preserve the destination on failure/lock/foreign collision.
+Known Welcome95 relocation is authorized through the recorded legacy Owner,
+original-shell backup and owned startup entries; never take over foreign entries
+or externally changed shell. Roll back exact old metadata/entries/shell on
+failed migration. Test this against private HKCU/files, not actual Wine startup.
+All newly managed diagnostics, stage logs, shell/EXE backups, font and DOS/PIF
+files belong under LOGON. Keep cached old bootstraps/recovery files intact.
+
+After manual VIEW_LOGIN, confirmed loading must show the selected account even
+if it is the only account. Only quiet automatic VIEW_STARTING may proceed to
+the lone greeting. Derive this from the UI phase, never by reading password
+contents. Preserve real OS-ready gating, loading delay and close acknowledgement.

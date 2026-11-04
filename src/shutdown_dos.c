@@ -51,8 +51,8 @@ DWORD ShutdownDosRestart(HWND owner)
     if (!IsWindows95(GetVersion()) || !DosInterfaces(&host)) return ERROR_NOT_SUPPORTED;
     length = GetWindowsDirectoryA(windows, MAX_PATH);
     if (!length || length >= MAX_PATH) return ERROR_PATH_NOT_FOUND;
-    length = GetTempPathA(MAX_PATH, temporary);
-    if (!length || length >= MAX_PATH) return ERROR_PATH_NOT_FOUND;
+    if(length+7>=MAX_PATH) return ERROR_FILENAME_EXCED_RANGE;
+    lstrcpyA(temporary,windows); lstrcatA(temporary,"\\LOGON");
     host.launchPif = LaunchPif;
     return ShutdownDosPrepare(owner, GetVersion(), windows, temporary, &host);
 }
@@ -127,7 +127,7 @@ done:
         if (pif[0]) DeleteFileA(pif);
         RemoveDirectoryA(privateDirectory);
     }
-    /* Retain a successfully dispatched PIF in TEMP: Windows may still read it
+    /* Retain a successfully dispatched PIF in its private directory: Windows may still read it
      * asynchronously, including during the subsequent transition to DOS. */
     return error;
 }
