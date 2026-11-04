@@ -733,3 +733,38 @@ is not target execution. No Internat process/startup setting or other repo chang
       native input, early cover at cold boot and wait cover during logoff.
 - [ ] Isolate Internat with Welcome95 disabled and the same Explorer95 shell;
       then inspect the failing module/callback if reproducible. Do not hide it.
+
+
+## 2026-11-04: version 1.0 and shell presentation handoff
+
+The owner requested release 1.0, supplied welcm95.ico and explicitly clarified
+that welcome should disappear after the saved SYSTEM.INI shell starts, without
+animation. This supersedes the old shell-after-CanvasClosed ordering. After real
+OS readiness and one second of Welcome, ShellMayStart permits /shell to launch
+the original command behind the visible canvas. The controller accepts its PID
+and removes the canvas on a visible shell window/process exit, with a two-second
+headless limit and five-second missing-confirmation fallback. These presentation
+signals never authenticate a session. /startup still waits for CanvasClosed set
+after DestroyWindow returns. Logoff resets permission/PID/confirmation with the
+other session state; previews remain inert. Settings/boot documentation and
+AGENTS.md now describe the requested ordering.
+
+Embed the supplied icon in both main EXE and CPL: eight original 4/8-bit DIB
+frames, 16/24/32/48px, with original palettes/masks unchanged. Preserve the full
+upload as assets/welcm95-original.ico; omit PNG/ARGB frames from the legacy ICO.
+Add main EXE file/product version 1.0.0.0 and display Welcome95 1.0 in Settings.
+Resource dependencies now rebuild main assets on ICO changes.
+
+Validation: 528 real-window checks per mode under Wine64/Xvfb at 640x480x16,
+800x600x24 and 1024x768x24; 83 session, 64 startup, 64 power and 47 CPL checks.
+The separate inert shell writes its startup marker behind a still-visible canvas
+while /startup remains blocked. Cover release, visible/hidden/foreign windows,
+headless/missing-launch limits and per-session reset are checked. Main/boot/CPL
+PE audits pass with 177/70/15 reviewed imports; all embedded icon frames and
+1.0 versions audited. Rebuilt tracked EXE and prepared EXE/checksum release assets.
+
+- [ ] Repeat the final handoff with the actual Explorer95/Explorer shell and
+      native provider on Win95/86Box; cloud tests do not execute a real OS logon.
+- [ ] Publish the GitHub Release page/assets for v1.0 once the environment permits
+      api.github.com and uploads.github.com. Read-only GitHub API checks currently
+      return Forbidden; Git access works. A pushed tag alone is not a Release page.

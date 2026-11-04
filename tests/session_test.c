@@ -250,7 +250,7 @@ void session_test_entry(void)
             if(!WriteFile(file,&launched,sizeof(launched),&written,NULL) || written!=sizeof(launched)) ExitProcess(3);
             CloseHandle(file);
             if(!MoveFileA(probe_pending,marker)) ExitProcess(3);
-            Sleep(200); ExitProcess(0);
+            Sleep(500); ExitProcess(0);
         }
         if(!lstrcmpA(mode,"/boot-welcome")) ExitProcess(bootstrap_forward(HKEY_CURRENT_USER,backup_key,"/welcome"));
         if(!lstrcmpA(mode,"/welcome")) {
@@ -343,6 +343,7 @@ void session_test_entry(void)
     ready_event=CreateEventA(NULL,TRUE,FALSE,READY_EVENT); closed_event=CreateEventA(NULL,TRUE,FALSE,CLOSED_EVENT);
     logoff_event=CreateEventA(NULL,TRUE,FALSE,LOGOFF_EVENT); ended_event=CreateEventA(NULL,TRUE,FALSE,ENDED_EVENT); controller_event=CreateEventA(NULL,TRUE,FALSE,CONTROLLER_EVENT);
     stop_event=CreateEventA(NULL,TRUE,FALSE,STOP_EVENT);
+    shell_event=CreateEventA(NULL,TRUE,FALSE,SHELL_EVENT); ResetEvent(shell_event);
     ResetEvent(ready_event); ResetEvent(closed_event); ResetEvent(logoff_event); ResetEvent(ended_event); ResetEvent(stop_event);
     ResetEvent(controller_event);
     shell_worker=worker("/boot-welcome"); cover=NULL; start=GetTickCount();
@@ -390,6 +391,9 @@ void session_test_entry(void)
     SendMessageA(controller,WM_ENDSESSION,FALSE,(LPARAM)ENDSESSION_LOGOFF_95);
     check(!require_account_choice && status_view==VIEW_STARTING,
         "a cancelled initial logoff does not consume startup automatic-login eligibility");
+    check(WaitForSingleObject(shell_event,0)==WAIT_TIMEOUT && !shell_released &&
+        WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+        "showing login alone cannot permit the shell or release ordinary startup");
     startup_worker=worker("/boot-startup"); shell_worker=worker("/boot-shell");
     check(startup_worker && shell_worker,"start real, separate startup and shell gate processes");
     start=GetTickCount();
@@ -407,16 +411,47 @@ void session_test_entry(void)
         WaitForSingleObject(startup_worker,0)==WAIT_TIMEOUT && WaitForSingleObject(shell_worker,0)==WAIT_TIMEOUT,
         "both gates remain blocked while welcome is visible, before the one-second delay");
     while((DWORD)(GetTickCount()-start)<1050) pump(10);
-    SendMessageA(screen,WM_TIMER,TICK,0); closed_at=canvas_destroyed_at;
-    check(!screen && session_running && WaitForSingleObject(closed_event,0)==WAIT_OBJECT_0,"acknowledge handoff only after the canvas has been destroyed");
-    check(finished(startup_worker,5000) && finished(shell_worker,5000),"both gate processes complete after the close acknowledgement");
-    CloseHandle(startup_worker); CloseHandle(shell_worker);
+    SendMessageA(screen,WM_TIMER,TICK,0);
+    check(screen && shell_released && WaitForSingleObject(shell_event,0)==WAIT_OBJECT_0 &&
+        WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT && WaitForSingleObject(startup_worker,0)==WAIT_TIMEOUT,
+        "confirmed welcome permits shell launch behind the canvas while startup remains blocked");
     start=GetTickCount();
     while(GetFileAttributesA(marker)==INVALID_FILE_ATTRIBUTES && (DWORD)(GetTickCount()-start)<5000) pump(10);
     file=CreateFileA(marker,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
     launched=0; written=0;
     if(file!=INVALID_HANDLE_VALUE) { ReadFile(file,&launched,sizeof(launched),&written,NULL); CloseHandle(file); }
-    check(written==sizeof(launched) && (LONG)(launched-closed_at)>=0,"the inert original shell actually starts after welcome closes");
+    check(written==sizeof(launched) && screen && IsWindowVisible(screen) && shell_confirmed &&
+        WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+        "the inert original shell begins while welcome is still visible and close acknowledgement is withheld");
+    start=GetTickCount();
+    while(screen && (DWORD)(GetTickCount()-start)<5000) { pump(10); if(screen) SendMessageA(screen,WM_TIMER,TICK,0); }
+    closed_at=canvas_destroyed_at;
+    check(!screen && session_running && WaitForSingleObject(closed_event,0)==WAIT_OBJECT_0 &&
+        (LONG)(closed_at-launched)>=0,"welcome disappears after shell start and acknowledges only completed destruction");
+    check(finished(startup_worker,5000) && finished(shell_worker,5000),"both gates finish after their separate shell-launch and close conditions");
+    CloseHandle(startup_worker); CloseHandle(shell_worker);
+    {
+        HANDLE previous_process=shell_process;
+        DWORD previous_id=shell_process_id;
+        shell_process=OpenProcess(SYNCHRONIZE,FALSE,GetCurrentProcessId());
+        shell_process_id=GetCurrentProcessId(); shell_started_at=GetTickCount();
+        check(shell_process && !shell_ready_to_reveal(),
+            "a confirmed live shell without a window stays covered during initialization");
+        competitor=CreateWindowA("STATIC","Inert shell window",WS_POPUP,10,10,80,40,NULL,NULL,instance,NULL);
+        check(competitor && !shell_ready_to_reveal(),"a hidden shell window does not reveal the desktop");
+        ShowWindow(competitor,SW_SHOWNOACTIVATE); shell_process_id=0xffffffffUL;
+        check(!shell_ready_to_reveal(),"an unrelated process window is not shell presentation evidence");
+        shell_process_id=GetCurrentProcessId();
+        check(shell_ready_to_reveal(),"a visible shell window permits immediate reveal without animation");
+        DestroyWindow(competitor); shell_started_at=GetTickCount()-2001;
+        check(shell_ready_to_reveal(),"a headless live shell has a bounded two-second presentation wait");
+        shell_confirmed=FALSE; shell_released_at=GetTickCount();
+        check(!shell_ready_to_reveal(),"a missing launch notification keeps welcome covered initially");
+        shell_released_at=GetTickCount()-5001;
+        check(shell_ready_to_reveal(),"a missing launch notification cannot trap an authenticated session indefinitely");
+        CloseHandle(shell_process); shell_process=previous_process; shell_process_id=previous_id;
+        shell_confirmed=TRUE;
+    }
     SendMessageA(controller,WM_TIMER,TICK,0);
     check(!screen && session_running,"shell exit alone is not misidentified as a new logon");
     notifier_ready=CreateEventA(NULL,TRUE,FALSE,"Welcome95.TestNotifierReady");
@@ -465,7 +500,8 @@ void session_test_entry(void)
         "new logon resets in-flight state and selection while requiring manual account choice");
     check(profiles_count()==1 && !account_open() && !GetDlgItem(screen,106) && !IsWindowVisible(GetDlgItem(screen,ID_SUBMIT)),
         "even one account is collapsed after logoff and cannot submit before selection");
-    check(WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+    check(WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT &&
+        WaitForSingleObject(shell_event,0)==WAIT_TIMEOUT && !shell_confirmed && !shell_released,
         "new logon clears the previous session's readiness and close acknowledgements");
     old_screen=screen; SetEvent(logoff_event); SendMessageA(controller,WM_TIMER,TICK,0);
     check(screen==old_screen && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,"duplicate logoff notifications do not restart an already waiting login");
@@ -492,6 +528,7 @@ void session_test_entry(void)
     check(WaitForSingleObject(startup_worker,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
         "creating a new canvas never acknowledges its own startup gate prematurely");
     SendMessageA(screen,WM_TIMER,TICK,0); finish_time=GetTickCount()-1001; SendMessageA(screen,WM_TIMER,TICK,0);
+    shell_released_at=GetTickCount()-5001; SendMessageA(screen,WM_TIMER,TICK,0);
     check(finished(startup_worker,5000),"the new gate waits until its own welcome has actually closed"); CloseHandle(startup_worker);
     SendMessageA(controller,WM_ENDSESSION,TRUE,0); SendMessageA(controller,WM_TIMER,TICK,0);
     provider_worker=worker("/provider"); provider=NULL; start=GetTickCount();
@@ -611,7 +648,7 @@ void session_test_entry(void)
     CloseHandle(provider_worker);
     check(startup_configure(&startup_config,FALSE)==0,"restore the isolated shell configuration after lifecycle tests");
     if(shell_process) CloseHandle(shell_process);
-    CloseHandle(ready_event); CloseHandle(closed_event); CloseHandle(logoff_event); CloseHandle(ended_event); CloseHandle(controller_event); CloseHandle(stop_event);
+    CloseHandle(shell_event); CloseHandle(ready_event); CloseHandle(closed_event); CloseHandle(logoff_event); CloseHandle(ended_event); CloseHandle(controller_event); CloseHandle(stop_event);
     RegDeleteKeyA(HKEY_CURRENT_USER,service_key); RegDeleteKeyA(HKEY_CURRENT_USER,run_key);
     RegDeleteKeyA(HKEY_CURRENT_USER,once_key); RegDeleteKeyA(HKEY_CURRENT_USER,backup_key); RegDeleteKeyA(HKEY_CURRENT_USER,fixture_root);
     remove_fixture(fixture_dir);

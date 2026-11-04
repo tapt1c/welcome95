@@ -71,6 +71,46 @@ def check(path, bootstrap=False, panel=False):
         descriptor += 20
     expected_dlls=set(allowed)-({'GDI32.dll','SHELL32.dll'} if panel else {'SHELL32.dll'} if bootstrap else set())
     require(set(imports) == expected_dlls, 'Unexpected or missing system DLLs')
+    # Validate the actual x86 icon/version/CPL metadata, not just the Wine fixture.
+    resource_root = offset(u32(optional + 112)) if not bootstrap else None
+
+    def resource(*ids):
+        directory = 0
+        for depth, identifier in enumerate(ids):
+            at = resource_root + directory
+            named, numbered = struct.unpack_from('<HH', data, at + 12)
+            entries = at + 16
+            found = None
+            for index in range(named + numbered):
+                name, target = struct.unpack_from('<II', data, entries + index * 8)
+                if name == identifier:
+                    found = target
+                    break
+            require(found is not None, f'Missing resource {ids}')
+            if depth + 1 < len(ids):
+                require(found & 0x80000000, f'Invalid resource directory {ids}')
+                directory = found & 0x7fffffff
+            else:
+                require(not found & 0x80000000, f'Invalid resource data {ids}')
+                rva, size = struct.unpack_from('<II', data, resource_root + found)
+                return data[offset(rva):offset(rva) + size]
+
+    if not bootstrap:
+        ico=pathlib.Path('assets/welcome95.ico').read_bytes()
+        count=struct.unpack_from('<H',ico,4)[0]
+        group=resource(14,1,0)
+        require(len(group)==6+14*count and struct.unpack_from('<HHH',group)==(0,1,count),
+                'Missing supplied legacy icon frames')
+        for index in range(count):
+            width,height,colors,reserved,planes,depth,size,at=struct.unpack_from('<BBBBHHII',ico,6+16*index)
+            entry=struct.unpack_from('<BBBBHHIH',group,6+14*index)
+            require(entry[:7]==(width,height,colors,reserved,planes,depth,size), 'Changed icon frame metadata')
+            require(resource(3,entry[7],0)==ico[at:at+size], 'Changed supplied icon pixels')
+        if not panel:
+            version=resource(16,1,0)
+            fixed=version.index(struct.pack('<I',0xFEEF04BD))
+            require(struct.unpack_from('<II',version,fixed+8)==(0x10000,0), 'Incorrect EXE file version')
+            require(struct.unpack_from('<II',version,fixed+16)==(0x10000,0), 'Incorrect EXE product version')
     if panel:
         require(u16(pe + 22) & 0x2000, 'Control Panel launcher must be a DLL')
         export = offset(u32(optional + 96))
@@ -78,35 +118,6 @@ def check(path, bootstrap=False, panel=False):
         names = offset(u32(export + 32))
         exports = {string(offset(u32(names + index * 4))) for index in range(count)}
         require(exports == {'CPlApplet'}, f'Unexpected applet exports: {exports}')
-        # Legacy Win95 hosts obtain cacheable metadata through CPL_INQUIRE;
-        # validate resources in the actual x86 DLL, not just the Wine fixture.
-        resource_root = offset(u32(optional + 112))
-
-        def resource(*ids):
-            directory = 0
-            for depth, identifier in enumerate(ids):
-                at = resource_root + directory
-                named, numbered = struct.unpack_from('<HH', data, at + 12)
-                entries = at + 16
-                found = None
-                for index in range(named + numbered):
-                    name, target = struct.unpack_from('<II', data, entries + index * 8)
-                    if name == identifier:
-                        found = target
-                        break
-                require(found is not None, f'Missing applet resource {ids}')
-                if depth + 1 < len(ids):
-                    require(found & 0x80000000, f'Invalid resource directory {ids}')
-                    directory = found & 0x7fffffff
-                else:
-                    require(not found & 0x80000000, f'Invalid resource data {ids}')
-                    rva, size = struct.unpack_from('<II', data, resource_root + found)
-                    return data[offset(rva):offset(rva) + size]
-
-        group = resource(14, 1, 0)
-        require(len(group) >= 20 and struct.unpack_from('<HHH', group) == (0, 1, 1),
-                'Missing legacy applet icon group')
-        resource(3, struct.unpack_from('<H', group, 18)[0], 0)
         for language in (1033, 1049):
             block = resource(6, 1, language)
             strings = []

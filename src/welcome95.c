@@ -19,6 +19,7 @@
 #define STOP_EVENT "Welcome95.Stop"
 #define INSTANCE_EVENT "Welcome95.Running"
 #define CLOSED_EVENT "Welcome95.CanvasClosed"
+#define SHELL_EVENT "Welcome95.ShellMayStart"
 #define LOGOFF_EVENT "Welcome95.LogoffCommitted"
 #define ENDED_EVENT "Welcome95.SessionEnded"
 #define CONTROLLER_EVENT BOOTSTRAP_READY_EVENT
@@ -60,7 +61,9 @@ static HANDLE monitor_instance;
 static const PowerOperations *menu_power;
 static BOOL preview_power;
 static HANDLE ready_event, stop_event, running_event, closed_event, logoff_event, controller_event, ended_event;
-static HANDLE shell_process;
+static HANDLE shell_process, shell_event;
+static DWORD shell_process_id,shell_started_at,shell_released_at;
+static BOOL shell_confirmed,shell_released;
 static HWND controller;
 static BOOL resident_mode, session_running, awaiting_logon, power_requested, ending_unknown, shutdown_only_canvas;
 static DWORD provider_process;
@@ -246,7 +249,7 @@ static int managed_settings(void)
 /* A shell/startup gate runs in the newly logged-on user's environment. */
 static DWORD handoff(BOOL launch_shell)
 {
-    HANDLE ready,closed,initialized,stop;
+    HANDLE ready,closed,initialized,stop,permission;
     STARTUPINFOA startup;
     PROCESS_INFORMATION child;
     char original[STARTUP_TEXT],command[MAX_PATH+40];
@@ -263,7 +266,8 @@ static DWORD handoff(BOOL launch_shell)
     closed=CreateEventA(NULL,TRUE,FALSE,CLOSED_EVENT);
     initialized=CreateEventA(NULL,TRUE,FALSE,CONTROLLER_EVENT);
     stop=CreateEventA(NULL,TRUE,FALSE,STOP_EVENT);
-    if(!ready || !closed || !initialized || !stop) error=ERROR_NOT_ENOUGH_MEMORY;
+    permission=CreateEventA(NULL,TRUE,FALSE,SHELL_EVENT);
+    if(!ready || !closed || !initialized || !stop || !permission) error=ERROR_NOT_ENOUGH_MEMORY;
     target=FindWindowA("Welcome95.Controller",NULL);
     if(!error && !target && WaitForSingleObject(stop,0)!=WAIT_OBJECT_0) {
         zero_memory(&startup,sizeof(startup)); startup.cb=sizeof(startup);
@@ -284,9 +288,9 @@ static DWORD handoff(BOOL launch_shell)
             error=ERROR_INVALID_WINDOW_HANDLE;
     }
     if(!error) {
-        startup_trace(startup_config.root,startup_config.backup_key,"handoff-wait-close",0);
+        startup_trace(startup_config.root,startup_config.backup_key,launch_shell ? "handoff-wait-shell-permission" : "handoff-wait-close",0);
         do {
-            waited=WaitForSingleObject(closed,20);
+            waited=WaitForSingleObject(launch_shell ? permission : closed,20);
             if(waited==WAIT_OBJECT_0) break;
             if(waited==WAIT_FAILED) { error=GetLastError(); break; }
             if(WaitForSingleObject(stop,0)==WAIT_OBJECT_0) { error=ERROR_CANCELLED; break; }
@@ -300,6 +304,7 @@ static DWORD handoff(BOOL launch_shell)
     if(closed) CloseHandle(closed);
     if(initialized) CloseHandle(initialized);
     if(stop) CloseHandle(stop);
+    if(permission) CloseHandle(permission);
 launch:
     if(!launch_shell) return 0;
     zero_memory(&startup,sizeof(startup)); startup.cb=sizeof(startup);
@@ -837,6 +842,32 @@ static void maintain_topmost(HWND hwnd)
     if(popup) SetWindowPos(popup,HWND_TOPMOST,0,0,0,0,flags);
 }
 
+static BOOL CALLBACK find_shell_window(HWND window,LPARAM parameter)
+{
+    DWORD process=0;
+    if(window==screen || window==controller || !IsWindowVisible(window)) return TRUE;
+    GetWindowThreadProcessId(window,&process);
+    if(process!=shell_process_id) return TRUE;
+    *(BOOL *)parameter=TRUE; return FALSE;
+}
+static BOOL shell_ready_to_reveal(void)
+{
+    BOOL visible=FALSE;
+    if(!shell_released) {
+        shell_released=TRUE; shell_released_at=GetTickCount();
+        if(shell_event) SetEvent(shell_event);
+        startup_trace(startup_config.root,startup_config.backup_key,"shell-permitted",0);
+        return FALSE;
+    }
+    if(!shell_confirmed) {
+        if((DWORD)(GetTickCount()-shell_released_at)<5000) return FALSE;
+        startup_trace(startup_config.root,startup_config.backup_key,"shell-not-confirmed",ERROR_TIMEOUT);
+        return TRUE;
+    }
+    EnumWindows(find_shell_window,(LPARAM)&visible);
+    return visible || !shell_process || WaitForSingleObject(shell_process,0)==WAIT_OBJECT_0 ||
+        (DWORD)(GetTickCount()-shell_started_at)>=2000;
+}
 static void begin_logon_cycle(BOOL reset);
 static void rescue_native_logon(void);
 static void release_ui_fonts(void);
@@ -995,8 +1026,10 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd,loading_view);
         }
         if (finishing && (DWORD)(GetTickCount() - finish_time) >= 1000) {
-            if(resident_mode) { session_running=TRUE; close_canvas(); }
-            else DestroyWindow(hwnd);
+            if(resident_mode) {
+                if(shell_ready_to_reveal()) { session_running=TRUE; close_canvas(); }
+                else maintain_topmost(hwnd);
+            } else DestroyWindow(hwnd);
             return 0;
         }
         if (preview_status && (DWORD)(GetTickCount()-preview_started) >= 5000) { DestroyWindow(hwnd); return 0; }
@@ -1102,6 +1135,8 @@ static void await_logon_cycle(void)
 {
     require_account_choice=TRUE;
     ResetEvent(ready_event); ResetEvent(closed_event);
+    if(shell_event) ResetEvent(shell_event);
+    shell_confirmed=shell_released=FALSE; shell_process_id=0;
     show_controller_cover(controller);
     /* Retiring the old session is not an authenticated shell handoff. */
     if(screen && IsWindow(screen)) DestroyWindow(screen);
@@ -1119,6 +1154,8 @@ static void begin_logon_cycle(BOOL reset)
     if(screen && IsWindow(screen)) DestroyWindow(screen);
     if(reset) ResetEvent(ready_event);
     ResetEvent(closed_event); ResetEvent(logoff_event);
+    if(shell_event) ResetEvent(shell_event);
+    shell_confirmed=shell_released=FALSE; shell_process_id=0; shell_started_at=shell_released_at=0;
     if(ended_event) ResetEvent(ended_event);
     if(shell_process) CloseHandle(shell_process);
     shell_process=NULL; session_running=FALSE; awaiting_logon=FALSE;
@@ -1205,6 +1242,7 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if(resident_mode) {
             if(shell_process) CloseHandle(shell_process);
             shell_process=OpenProcess(SYNCHRONIZE,FALSE,(DWORD)wp);
+            shell_process_id=(DWORD)wp; shell_confirmed=TRUE; shell_started_at=GetTickCount();
         }
         return 0;
     case WM_QUERYENDSESSION:
@@ -1289,9 +1327,9 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
     char command[MAX_PATH + 40];
     switch (message) {
     case WM_CREATE:
-        child=CreateWindowA("STATIC","Welcome95",WS_CHILD|WS_VISIBLE,10,8,384,18,hwnd,NULL,instance,NULL);
+        child=CreateWindowA("STATIC","Welcome95 1.0",WS_CHILD|WS_VISIBLE,10,8,384,18,hwnd,NULL,instance,NULL);
         SendMessageA(child,WM_SETFONT,(WPARAM)settings_title_font,TRUE);
-        child=CreateWindowA("STATIC",ui_text("\317\360\350\342\345\362\361\362\342\350\345 \342 \361\362\350\353\345 Windows XP \344\353\377 Windows 95.\r\n\316\341\356\353\356\367\352\340 \347\340\357\363\361\352\340\345\362\361\377 \357\356\361\353\345 \357\360\350\342\345\362\361\362\342\350\377.\r\n\317\360\356\342\345\360\352\363 \357\340\360\356\353\377 \342\373\357\356\353\355\377\345\362 Windows.","Windows XP welcome screen for Windows 95.\r\nYour shell starts after welcome closes.\r\nWindows verifies your password."),
+        child=CreateWindowA("STATIC",ui_text("\317\360\350\342\345\362\361\362\342\350\345 \342 \361\362\350\353\345 Windows XP \344\353\377 Windows 95.\r\n\316\341\356\353\356\367\352\340 \343\356\362\356\342\350\362\361\377 \347\340 \375\352\360\340\355\356\354 \357\360\350\342\345\362\361\362\342\350\377.\r\n\317\360\356\342\345\360\352\363 \357\340\360\356\353\377 \342\373\357\356\353\355\377\345\362 Windows.","Windows XP welcome screen for Windows 95.\r\nYour shell starts behind the welcome screen.\r\nWindows verifies your password."),
             WS_CHILD|WS_VISIBLE,10,30,384,42,hwnd,NULL,instance,NULL);
         SendMessageA(child,WM_SETFONT,(WPARAM)settings_font,TRUE);
         child=CreateWindowA("STATIC","",WS_CHILD|WS_VISIBLE,10,78,384,16,hwnd,(HMENU)200,instance,NULL);
@@ -1423,7 +1461,8 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
         logoff_event=CreateEventA(NULL,TRUE,FALSE,LOGOFF_EVENT);
         ended_event=CreateEventA(NULL,TRUE,FALSE,ENDED_EVENT);
         controller_event=CreateEventA(NULL,TRUE,FALSE,CONTROLLER_EVENT);
-        if(!closed_event || !logoff_event || !controller_event || !ended_event) return 1;
+        shell_event=CreateEventA(NULL,TRUE,FALSE,SHELL_EVENT);
+        if(!closed_event || !logoff_event || !controller_event || !ended_event || !shell_event) return 1;
         address.raw=GetProcAddress(GetModuleHandleA("kernel32.dll"),"RegisterServiceProcess");
         register_service=address.service;
         if(!register_service || !register_service(GetCurrentProcessId(),1)) return 1;
@@ -1434,6 +1473,7 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
     }
     zero_memory(&cls, sizeof(cls));
     cls.hInstance = instance; cls.hCursor = LoadCursor(NULL, IDC_ARROW);
+    cls.hIcon=LoadIconA(instance,MAKEINTRESOURCEA(1));
     cls.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     cls.lpfnWndProc = welcome || preview || session_monitor ? welcome_proc : settings_proc;
     cls.lpszClassName = welcome || preview || session_monitor ? "Welcome95.Screen" : "Welcome95.Settings";
@@ -1464,6 +1504,7 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
     }
     if(register_service && resident_mode) register_service(GetCurrentProcessId(),0);
     if(shell_process) CloseHandle(shell_process);
+    if(shell_event) CloseHandle(shell_event);
     if(closed_event) CloseHandle(closed_event);
     if(logoff_event) CloseHandle(logoff_event);
     if(ended_event) CloseHandle(ended_event);

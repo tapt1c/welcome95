@@ -36,12 +36,12 @@ build/topmost_test64.exe: tests/topmost_test.c src/welcome95.c src/native_logon.
 clean:
 	rm -rf build
 
-build/assets.o: build/w95boot.exe build/w95panel.cpl assets/welcome95.rc $(wildcard assets/*.bmp) $(wildcard assets/fonts/*.TTF)
+build/assets.o: build/w95boot.exe build/w95panel.cpl assets/welcome95.rc assets/welcome95.ico $(wildcard assets/*.bmp) $(wildcard assets/fonts/*.TTF)
 	mkdir -p build
 	$(WINDRES) --preprocessor="$(CC)" --preprocessor-arg=-E --preprocessor-arg=-xc --preprocessor-arg=-DRC_INVOKED -I assets assets/welcome95.rc -O coff -o $@
 
 TEST_WINDRES = x86_64-w64-mingw32-windres
-build/assets64.o: build/w95boot.exe build/w95panel.cpl assets/welcome95.rc $(wildcard assets/*.bmp) $(wildcard assets/fonts/*.TTF)
+build/assets64.o: build/w95boot.exe build/w95panel.cpl assets/welcome95.rc assets/welcome95.ico $(wildcard assets/*.bmp) $(wildcard assets/fonts/*.TTF)
 	mkdir -p build
 	$(TEST_WINDRES) --preprocessor="$(TEST_CC)" --preprocessor-arg=-E --preprocessor-arg=-xc --preprocessor-arg=-DRC_INVOKED -I assets assets/welcome95.rc -O coff -o $@
 

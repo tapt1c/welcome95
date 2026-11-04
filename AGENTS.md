@@ -135,12 +135,17 @@ Disable restores the original shell and retains recovery metadata for cached or
 in-flight gate invocations. Every install mutation needs rollback/readback tests
 against private HKCU/INI fixtures, not actual boot configuration under Wine.
 
-The shell gate inherits the logged-on environment. It may launch the saved shell
-only after the controller's close acknowledgement; acknowledge after DestroyWindow
-returns. Beginning another canvas must not set that acknowledgement. Serialize a
-new OS session handshake with pending end-session notifications. Keep bounded waits
-and release startup on Disable/failure; do not suspend/terminate arbitrary apps.
-Never read password text or infer successful authentication from a button click.
+The shell gate inherits the logged-on environment. The user explicitly changed
+handoff for release 1.0: after genuine OS readiness and at least one second of
+Welcome, permit the saved shell to start behind the canvas. Its PID/visible
+window is presentation evidence only, never authentication. Remove the canvas
+without animation after shell startup; keep bounded waits for headless shells,
+exited processes or missing notifications. Ordinary startup still waits for the
+close acknowledgement, set only after DestroyWindow returns. Beginning another
+canvas must not set it. Reset shell permission/PID/confirmation on every cycle.
+Serialize a new OS handshake with pending end-session notifications. Release
+startup on Disable/failure; do not suspend/terminate arbitrary apps. Never read
+password text or infer successful authentication from a button click.
 
 Idle z-order maintenance must cause no SetWindowPos churn. Batch necessary changes
 so the canvas never repeatedly covers/uncover the native Edit. Keep hidden windows
