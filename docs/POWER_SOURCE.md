@@ -47,3 +47,25 @@ Managed installation keeps successful DOS PIFs in unique subdirectories beneath
 %WINDIR%\LOGON instead of TEMP. The PIF protocol, verification, asynchronous
 retention and failure cleanup are unchanged. Inert DOS tests now use a private
 Windows/LOGON fixture. No real DOS or power request is made by the tests.
+
+
+Buffered native-button painting follows the same approach as Explorer95's
+[LinkProc](https://github.com/tapt1c/explorer95/blob/cb970dac91a1c31ac8433df27a1063a9967f8d1a/src/browser_control_panel.c):
+intercept WM_ERASEBKGND/WM_PAINT while forwarding other messages to the original
+BUTTON procedure. Welcome95 shares this through painted_button.h for its power,
+submit and three power-choice action buttons, composing each frame off-screen.
+It does not subclass Windows' password Edit or change native authentication.
+CallWindowProcA is the classic Win95 subclassing API used by that reference;
+this is the only added production import (USER32), audited with the x86 binary.
+
+The choice's own client is also buffered. Parent damage only repairs custom
+buttons that intersect its damage bounds; unrelated footer controls stay idle.
+Cancel restores enabled states while the shade still covers the canvas, retaining
+the active/closing guard through teardown and focus restoration. This blocks a
+reentrant welcome timer from lifting the canvas over the closing shade.
+
+Fade phases are selected from elapsed time (16 phases at nominal 35ms intervals).
+Slow paints skip obsolete phases using one combined desaturation/dimming transform
+per pixel, rather than replaying sixteen full-screen copies. No alpha/layered
+window API, extra full-screen pixel buffer, OS power change or forced action was
+added. The driver still determines the time taken to present each physical frame.

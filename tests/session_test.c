@@ -1,19 +1,24 @@
 /* Real cross-process gates, inert shell, private registry/INI; no OS logoff. */
 #include "../src/profiles.c"
+#include "../src/fonts.h"
 static BOOL single_profile_fixture;
 static void fixture_profiles_load(void);
+static int fixture_fonts_load(HINSTANCE module);
+#define bundled_fonts_load fixture_fonts_load
 #define profiles_load fixture_profiles_load
 static BOOL WINAPI session_set_event(HANDLE event);
 #define SetEvent session_set_event
 #include "../src/welcome95.c"
 #undef SetEvent
 #undef profiles_load
+#undef bundled_fonts_load
 #include "../src/bootstrap.h"
 static HANDLE output;
 static int failures,positions;
 static DWORD canvas_destroyed_at;
 static BOOL consume_creation_damage, visible_during_creation;
 static DWORD premature_paints,closed_publications;
+static BOOL early_init_probe,profiles_saw_frame,fonts_saw_frame,init_timer_guarded;
 static BOOL WINAPI session_set_event(HANDLE event)
 {
     if(event && event==closed_event) ++closed_publications;
@@ -43,11 +48,28 @@ static const BYTE test_boot[32]={'M','Z',1,2,3};
 static char service_key[160],run_key[160],once_key[160],backup_key[160],marker[MAX_PATH];
 static void fixture_profiles_load(void)
 {
+    if(early_init_probe) {
+        HDC dc=screen ? GetDC(screen) : NULL;
+        COLORREF pixel=dc ? GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,200) : CLR_INVALID;
+        if(dc) ReleaseDC(screen,dc);
+        profiles_saw_frame=screen && IsWindowVisible(screen) && preparing_canvas && status_view==VIEW_STARTING &&
+            !*bundled_fonts_directory() && pixel!=CLR_INVALID && GetBValue(pixel)>200 && GetRValue(pixel)<130;
+    }
     if(single_profile_fixture) {
         char key[160];
         wsprintfA(key,"%s\\Profiles",fixture_root);
         load_sources(HKEY_CURRENT_USER,key,fixture_ini); profiles_remember("First");
     } else profiles_load();
+}
+static int fixture_fonts_load(HINSTANCE module)
+{
+    if(early_init_probe) {
+        fonts_saw_frame=profiles_saw_frame && screen && IsWindowVisible(screen) && preparing_canvas;
+        SetEvent(ready_event); SendMessageA(screen,WM_TIMER,TICK,0);
+        init_timer_guarded=!finishing && !single_submitted && !next_logon_attempt;
+        ResetEvent(ready_event);
+    }
+    return bundled_fonts_load(module);
 }
 static void check(BOOL okay,const char *text)
 {
@@ -311,7 +333,10 @@ void session_test_entry(void)
     ResetEvent(ready_event); ResetEvent(closed_event); ResetEvent(logoff_event); ResetEvent(ended_event); ResetEvent(stop_event);
     controller=CreateWindowA("Welcome95.Controller","Test controller",WS_OVERLAPPED,0,0,0,0,NULL,NULL,instance,NULL); KillTimer(controller,TICK);
     single_profile_fixture=TRUE;
-    begin_logon_cycle(FALSE); KillTimer(screen,TICK); SetEvent(controller_event);
+    release_ui_fonts(); early_init_probe=TRUE;
+    begin_logon_cycle(FALSE); early_init_probe=FALSE; KillTimer(screen,TICK); SetEvent(controller_event);
+    check(profiles_saw_frame && fonts_saw_frame,"the first complete startup frame is visible before profile discovery or embedded font extraction");
+    check(init_timer_guarded && !preparing_canvas,"a reentrant ready timer cannot authenticate or finish the canvas during resource preparation");
     check(profiles_count()==1 && status_view==VIEW_STARTING && !require_account_choice && !automatic_attempted,
         "a fresh controller still permits its initial one-account quiet startup");
     SendMessageA(controller,WM_ENDSESSION,FALSE,(LPARAM)ENDSESSION_LOGOFF_95);

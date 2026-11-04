@@ -100,3 +100,5 @@ build/control_panel_test64.exe: tests/control_panel_test.c src/control_panel.c s
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/control_panel_test.c src/startup.c -o $@ -mwindows -nostdlib -Wl,--entry,panel_test_entry -luser32 -ladvapi32 -lkernel32
 
 build/welcome95.exe build/topmost_test64.exe build/preview64.exe build/render_test64.exe build/power_test64.exe build/layout_test64.exe build/session_test64.exe build/ui_test64.exe: src/control_panel.c src/control_panel.h
+
+build/welcome95.exe build/topmost_test64.exe build/preview64.exe build/render_test64.exe build/power_test64.exe build/layout_test64.exe build/session_test64.exe build/ui_test64.exe: src/painted_button.h

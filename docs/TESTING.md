@@ -552,3 +552,34 @@ bootstrap and CPL PE/resource audits pass with unchanged import counts. A
 separate private probe compiles the preceding backend and the fixed backend
 against the same normalized-default adapter: 170/panel-ini-owner versus success.
 Retry Enable and native Control Panel discovery in the target Win95 VM.
+
+
+## White button flashes, cancellation and early first frame
+
+Current suite: 506 checks each at 800x600x24, 640x480x16 and 1024x768x24 under
+Wine64/Xvfb, including 59 power and 66 session checks. The power fixture models
+old USER clearing a BUTTON to white before owner draw; it first verifies those
+white pixels, then verifies our power/submit/action controls bypass that path
+through erase and repaint. Full parent damage still repairs pixels, while damage
+away from the footer does not repaint its button. Native BM_CLICK still opens
+the inert choice and submits the preview action.
+
+Delay each shade paint by 100ms: the fade must skip obsolete phases instead of
+replaying sixteen timer steps, then become paint-idle. During Cancel's WM_ENABLE,
+verify the shade is still present, the modal guard remains active and a reentrant
+welcome timer cannot reorder the canvas over it. Existing dispatch/disabled-state
+and real cross-process password tests remain enabled and inert.
+
+An initial-cycle fixture releases fonts and inspects the actual first-frame
+pixels before profiles_load and bundled_fonts_load. A ready timer injected during
+resource preparation cannot finish welcome or submit; quiet-start, logoff-choice
+and post-destruction shell-gate checks still pass. Production main/boot/CPL audits
+pass (175/51/15 imports), including existing static CPL resources; helpers match
+the embedded bytes. CallWindowProcA is the classic Win95 subclassing addition.
+
+Target Windows 95/86Box: open/cancel power repeatedly with and without an open
+account; inspect the power button/arrow/action buttons for white/blank frames.
+Repeat mouse, keyboard, shade cancellation and genuine native input. Cold boot
+and compare the first startup frame against appearance of the stock dialog.
+Cloud tests do not execute Win95's old USER or establish its service scheduling
+or hardware presentation speed.

@@ -8,6 +8,7 @@
 #include "power_actions.h"
 #include "startup.h"
 #include "control_panel.h"
+#include "painted_button.h"
 
 #define APP "Welcome95"
 #define REG_SERVICE "Software\\Microsoft\\Windows\\CurrentVersion\\RunServices"
@@ -67,7 +68,7 @@ static StartupConfig startup_config;
 static PanelConfig panel_config;
 static char system_ini[MAX_PATH],control_ini[MAX_PATH],boot_directory[MAX_PATH];
 static BOOL rescue_mode;
-static BOOL preview, finishing;
+static BOOL preview, finishing, preparing_canvas;
 static DWORD finish_time;
 static HWND login_window;
 static BOOL login_was_topmost;
@@ -342,7 +343,12 @@ static void finish_paint(HWND hwnd, PAINTSTRUCT *paint, HDC dc, HBITMAP frame, H
     for(index=0;index<2;++index) {
         button=GetDlgItem(hwnd,custom_buttons[index]);
         if(button && IsWindowVisible(button)) {
-            InvalidateRect(button,NULL,FALSE); UpdateWindow(button);
+            RECT bounds;
+            GetWindowRect(button,&bounds); MapWindowPoints(NULL,hwnd,(POINT *)&bounds,2);
+            if(bounds.left<paint->rcPaint.right && bounds.right>paint->rcPaint.left &&
+               bounds.top<paint->rcPaint.bottom && bounds.bottom>paint->rcPaint.top) {
+                InvalidateRect(button,NULL,FALSE); UpdateWindow(button);
+            }
         }
     }
     if(status_view==VIEW_LOGIN) native_logon_repaint();
@@ -404,6 +410,14 @@ static void create_ui_fonts(void)
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Tahoma");
     message_font = CreateFontA(-font_pixels(14),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Arial");
+}
+static void release_ui_font_handles(void)
+{
+    DeleteObject(status_font); DeleteObject(welcome_font); DeleteObject(title_font);
+    DeleteObject(body_font); DeleteObject(small_font); DeleteObject(power_caption_font);
+    DeleteObject(settings_font); DeleteObject(settings_title_font); DeleteObject(message_font);
+    status_font=welcome_font=title_font=body_font=small_font=power_caption_font=NULL;
+    settings_font=settings_title_font=message_font=NULL;
 }
 static BOOL russian_ui(void)
 {
@@ -591,7 +605,7 @@ static void paint_welcome(HWND hwnd)
     finish_paint(hwnd,&paint,dc,frame,old);
 }
 
-static void draw_button(DRAWITEMSTRUCT *item)
+static void draw_button(const DRAWITEMSTRUCT *item)
 {
     RECT rectangle = item->rcItem;
     RECT stripe;
@@ -833,9 +847,11 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         SendDlgItemMessageA(hwnd, ID_NATIVE, WM_SETFONT, (WPARAM)small_font, TRUE);
         CreateWindowA("BUTTON", ui_text("\302\356\351\362\350","Sign in"), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             card_x(685), row_y(profile_top(selected_profile)+51), 26, 26, hwnd, (HMENU)ID_SUBMIT, instance, NULL);
+        painted_button_install(GetDlgItem(hwnd,ID_SUBMIT),draw_button);
         EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), preview);
         CreateWindowA("BUTTON", ui_text("\302\373\352\353\376\367\350\362\374 \352\356\354\357\374\376\362\345\360","Turn off computer"), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             25, by(526), 245, 29, hwnd, (HMENU)ID_POWER, instance, NULL);
+        painted_button_install(GetDlgItem(hwnd,ID_POWER),draw_button);
         CreateWindowA("BUTTON", "<", WS_CHILD | (profiles_count()>4 ? WS_VISIBLE : 0), cx(720), cy(455), 25, 24, hwnd, (HMENU)ID_PREV, instance, NULL);
         CreateWindowA("BUTTON", ">", WS_CHILD | (profiles_count()>4 ? WS_VISIBLE : 0), cx(750), cy(455), 25, 24, hwnd, (HMENU)ID_NEXT, instance, NULL);
         CreateWindowA("SCROLLBAR","",WS_CHILD|SBS_VERT,compact_x(495),compact_y(208),17,176,
@@ -959,7 +975,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if (stop_event && WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
             DestroyWindow(hwnd); return 0;
         }
-        if(power_dialog_active()) return 0;
+        if(power_dialog_active() || preparing_canvas) return 0;
         if (sign_in_view() && !finishing && ready_event && WaitForSingleObject(ready_event, 0) == WAIT_OBJECT_0) {
             int loading_view=profiles_count()>1 || status_view==VIEW_LOGIN ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE;
             finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd,loading_view);
@@ -1073,12 +1089,29 @@ static void begin_logon_cycle(BOOL reset)
     finishing=FALSE; prefer_native=FALSE; pending_profile=FALSE; servicing_logon=FALSE;
     rescue_mode=FALSE;
     automatic_attempted=require_account_choice; compact_selected=FALSE; selected_profile=profile_page=0;
-    next_logon_attempt=next_profile_attempt=0; status_view=VIEW_LOGIN;
-    profiles_load();
-    single_submitted=FALSE; single_started=GetTickCount();
-    if(!preview && !require_account_choice && profiles_count()==1) status_view=VIEW_STARTING;
-    if(!body_font) { bundled_fonts_load(instance); create_ui_fonts(); }
-    if(!create_canvas()) { if(stop_event) SetEvent(stop_event); if(closed_event) SetEvent(closed_event); }
+    next_logon_attempt=next_profile_attempt=0;
+    single_submitted=FALSE; preparing_canvas=TRUE; status_view=VIEW_STARTING;
+    /* First cover the desktop using OS fonts and embedded artwork. Profile
+       discovery and TTF extraction/registration must not delay the first frame. */
+    {
+        BOOL load_fonts=!body_font;
+        if(load_fonts) create_ui_fonts();
+        if(!create_canvas()) {
+            preparing_canvas=FALSE;
+            if(stop_event) SetEvent(stop_event);
+            if(closed_event) SetEvent(closed_event);
+            return;
+        }
+        profiles_load();
+        if(load_fonts && bundled_fonts_load(instance)>0) {
+            release_ui_font_handles(); create_ui_fonts();
+            SendDlgItemMessageA(screen,ID_NATIVE,WM_SETFONT,(WPARAM)small_font,FALSE);
+            SendDlgItemMessageA(screen,ID_DONE,WM_SETFONT,(WPARAM)small_font,FALSE);
+        }
+    }
+    single_started=GetTickCount();
+    set_status_view(screen,!preview && !require_account_choice && profiles_count()==1 ? VIEW_STARTING : VIEW_LOGIN);
+    preparing_canvas=FALSE;
     if(enabled()) startup_rearm(&startup_config);
 }
 static void rescue_native_logon(void)
@@ -1258,13 +1291,9 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
 
 static void release_ui_fonts(void)
 {
-    DeleteObject(status_font); DeleteObject(welcome_font); DeleteObject(title_font);
-    DeleteObject(body_font); DeleteObject(small_font); DeleteObject(power_caption_font);
-    DeleteObject(settings_font); DeleteObject(settings_title_font); DeleteObject(message_font);
+    release_ui_font_handles();
     bundled_fonts_release();
     power_operations_release();
-    status_font=welcome_font=title_font=body_font=small_font=power_caption_font=NULL;
-    settings_font=settings_title_font=message_font=NULL;
 }
 
 int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int show)
@@ -1350,7 +1379,7 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
         if(!register_service || !register_service(GetCurrentProcessId(),1)) return 1;
         resident_mode=monitor_active=TRUE;
     }
-    if(!session_monitor || !FindWindowA("Welcome95.Controller",NULL)) {
+    if(!welcome && (!session_monitor || !FindWindowA("Welcome95.Controller",NULL))) {
         profiles_load(); bundled_fonts_load(instance); create_ui_fonts();
     }
     zero_memory(&cls, sizeof(cls));

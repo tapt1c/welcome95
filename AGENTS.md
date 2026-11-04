@@ -299,3 +299,21 @@ Detect MMCPL key presence by enumerating actual key names, not by expecting a
 nonprinting default marker to survive GetPrivateProfileStringA. Missing and
 present-empty entries are distinct ownership states; reject truncated inventories.
 Keep the strict profile-API fixture and run the full panel lifecycle through it.
+
+
+## Buffered buttons and early presentation
+
+Our own owner-drawn BUTTONs use painted_button.h to handle erase/paint directly
+and compose each client off-screen; forward all other messages to the saved
+native procedure with CallWindowProcA. Keep native mouse/keyboard/BM_CLICK
+behavior and free per-control state on WM_NCDESTROY. Do not apply this to the
+foreign password Edit. Parent damage repairs intersecting custom buttons only.
+Keep the power dialog active through teardown, restore input beneath its shade,
+and select fade phases by elapsed time so slow paints skip stale full-screen
+updates. Retain inert power, pixel, slow-paint and reentrant-cancel regressions.
+
+Show the first complete startup frame before profile discovery and bundled-font
+extraction. Keep preparing_canvas guarded against reentrant timers, refresh owned
+control fonts after font recreation, and start quiet-attempt timeout afterward.
+Never claim a Win95 timing comparison from Wine; validate RunServices/provider
+ordering separately on the target OS. Preserve real readiness and shell gates.

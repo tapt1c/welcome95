@@ -1,13 +1,16 @@
 /* Adapted from tapt1c/explorer95/src/shutdown.c. No layered windows/alpha API. */
 #include "power_dialog.h"
+#include "painted_button.h"
 #define FADE_STEPS 16
+#define FADE_INTERVAL 35
 static HWND shade, choice, previous_focus;
 static PowerDialogHost context;
-static BOOL owner_enabled, input_enabled, executing;
+static BOOL owner_enabled, input_enabled, executing, closing;
 static HBITMAP snapshot;
 static BYTE *pixels;
 static BITMAPINFO image;
 static int screen_width,screen_height,step,choice_width,choice_height;
+static DWORD fade_started;
 static HFONT title_font,button_font;
 static HBRUSH footer_brush;
 
@@ -62,22 +65,33 @@ done:
 }
 static void fade(void)
 {
-    DWORD index,count;
+    DWORD index,count,elapsed;
+    UINT brightness=65536,color=65536,gray_weight;
+    int target,advance;
     HDC dc;
     if(!pixels || step>=FADE_STEPS) return;
+    elapsed=GetTickCount()-fade_started;
+    target=elapsed>=FADE_STEPS*FADE_INTERVAL ? FADE_STEPS : (int)(elapsed/FADE_INTERVAL);
+    if(target<=step) return;
+    /* Skip obsolete frames on slow Win9x drivers. Apply the combined transform
+       once per pixel, keeping the fade bounded by elapsed time, not timer count. */
+    for(advance=step;advance<target;++advance) {
+        brightness=brightness*15U/16U; color=color*105U/128U;
+    }
+    gray_weight=brightness-color;
     count=(DWORD)screen_width*screen_height;
     for(index=0;index<count;++index) {
         BYTE *p=pixels+index*4;
         UINT gray=(p[0]+2U*p[1]+p[2])>>2;
-        p[0]=(BYTE)((7U*p[0]+gray)*15U>>7);
-        p[1]=(BYTE)((7U*p[1]+gray)*15U>>7);
-        p[2]=(BYTE)((7U*p[2]+gray)*15U>>7);
+        p[0]=(BYTE)((p[0]*color+gray*gray_weight)>>16);
+        p[1]=(BYTE)((p[1]*color+gray*gray_weight)>>16);
+        p[2]=(BYTE)((p[2]*color+gray*gray_weight)>>16);
     }
     dc=GetDC(shade); SetDIBits(dc,snapshot,0,screen_height,pixels,&image,DIB_RGB_COLORS); ReleaseDC(shade,dc);
-    ++step; InvalidateRect(shade,NULL,FALSE);
+    step=target; InvalidateRect(shade,NULL,FALSE);
     if(step==FADE_STEPS) { HeapFree(GetProcessHeap(),0,pixels); pixels=NULL; SetTimer(choice,1,100,NULL); }
 }
-BOOL power_dialog_active(void) { return choice!=NULL || executing; }
+BOOL power_dialog_active(void) { return shade!=NULL || choice!=NULL || executing || closing; }
 void power_dialog_focus(void)
 {
     if(!choice) return;
@@ -87,8 +101,16 @@ void power_dialog_focus(void)
 }
 void power_dialog_close(void)
 {
-    HWND old=choice; choice=NULL;
-    if(old) { KillTimer(old,1); DestroyWindow(old); }
+    HWND old;
+    if(closing) return;
+    closing=TRUE; old=choice; choice=NULL;
+    if(old) KillTimer(old,1);
+    /* Restore input while still covered. Keep the modal guard through teardown
+       so a reentrant welcome timer cannot raise the canvas above the shade. */
+    if(owner_enabled && IsWindow(context.owner)) EnableWindow(context.owner,TRUE);
+    if(input_enabled && IsWindow(context.native_input)) EnableWindow(context.native_input,TRUE);
+    owner_enabled=input_enabled=FALSE;
+    if(old) DestroyWindow(old);
     if(shade) DestroyWindow(shade);
     shade=NULL;
     if(snapshot) DeleteObject(snapshot);
@@ -101,13 +123,11 @@ void power_dialog_close(void)
     button_font=NULL;
     if(footer_brush) DeleteObject(footer_brush);
     footer_brush=NULL;
-    if(owner_enabled && IsWindow(context.owner)) EnableWindow(context.owner,TRUE);
-    if(input_enabled && IsWindow(context.native_input)) EnableWindow(context.native_input,TRUE);
-    owner_enabled=input_enabled=FALSE;
     if(old && IsWindow(context.owner))
         RedrawWindow(context.owner,NULL,NULL,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
     if(old && previous_focus && IsWindowVisible(previous_focus) && IsWindowEnabled(previous_focus)) SetForegroundWindow(previous_focus);
     if(old && context.restore_focus) context.restore_focus();
+    closing=FALSE;
 }
 static LRESULT CALLBACK shade_proc(HWND window,UINT message,WPARAM wp,LPARAM lp)
 {
@@ -194,13 +214,25 @@ static LRESULT CALLBACK choice_proc(HWND window,UINT message,WPARAM wp,LPARAM lp
     switch(message) {
     case WM_ERASEBKGND: return TRUE;
     case WM_PAINT: {
-        PAINTSTRUCT paint; RECT rect,body,title; HDC dc=BeginPaint(window,&paint); HGDIOBJ old;
-        GetClientRect(window,&rect); color_rect(dc,&rect,RGB(0,45,140));
+        PAINTSTRUCT paint; RECT rect,body,title;
+        HDC target=BeginPaint(window,&paint),dc,memory;
+        HBITMAP frame; HGDIOBJ old,old_frame=NULL;
+        GetClientRect(window,&rect); memory=CreateCompatibleDC(target);
+        frame=memory ? CreateCompatibleBitmap(target,rect.right,rect.bottom) : NULL;
+        dc=target;
+        if(frame) { old_frame=SelectObject(memory,frame); dc=memory; }
+        else if(memory) DeleteDC(memory);
+        color_rect(dc,&rect,RGB(0,45,140));
         SetRect(&body,0,43,rect.right,choice_height-43); paint_body(dc,&body,0);
         SetRect(&title,12,0,rect.right-45,43); old=SelectObject(dc,title_font);
         SetBkMode(dc,TRANSPARENT); SetTextColor(dc,RGB(255,255,255));
         DrawTextA(dc,context.russian ? "\302\373\352\353\376\367\350\362\374\040\352\356\354\357\374\376\362\345\360" : "Turn off computer",-1,&title,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-        SelectObject(dc,old); paint_flag(dc); EndPaint(window,&paint); return 0;
+        SelectObject(dc,old); paint_flag(dc);
+        if(frame) {
+            BitBlt(target,0,0,rect.right,rect.bottom,memory,0,0,SRCCOPY);
+            SelectObject(memory,old_frame); DeleteObject(frame); DeleteDC(memory);
+        }
+        EndPaint(window,&paint); return 0;
     }
     case WM_DRAWITEM: draw_action((const DRAWITEMSTRUCT *)lp); return TRUE;
     case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
@@ -220,6 +252,7 @@ static LRESULT CALLBACK choice_proc(HWND window,UINT message,WPARAM wp,LPARAM lp
         return 0;
     case WM_TIMER: {
         HWND foreground,owner;
+        if(closing) return 0;
         fade(); foreground=GetForegroundWindow(); owner=foreground;
         while(owner && owner!=window) owner=GetWindow(owner,GW_OWNER);
         if(IsWindowVisible(window) && !owner && !IsChild(window,foreground)) power_dialog_focus();
@@ -263,6 +296,7 @@ BOOL power_dialog_show(const PowerDialogHost *host)
         HWND button=CreateWindowA("BUTTON",host->russian ? russian[i] : english[i],WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW,
             24+i*column,73,column,64,choice,(HMENU)(UINT_PTR)(POWER_STANDBY+i),host->instance,NULL);
         if(!button) { power_dialog_close(); return FALSE; }
+        painted_button_install(button,draw_action);
         SendMessageA(button,WM_SETFONT,(WPARAM)button_font,TRUE);
     }
     CreateWindowA("BUTTON",context.russian ? "\316\362\354\345\355\340" : "Cancel",WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
@@ -279,7 +313,8 @@ BOOL power_dialog_show(const PowerDialogHost *host)
     if(input_enabled) EnableWindow(host->native_input,FALSE);
     ShowWindow(shade,SW_SHOWNOACTIVATE); UpdateWindow(shade);
     ShowWindow(choice,SW_SHOW); UpdateWindow(choice); power_dialog_focus(); SetFocus(GetDlgItem(choice,IDCANCEL));
-    SetTimer(choice,1,35,NULL); return TRUE;
+    fade_started=GetTickCount();
+    SetTimer(choice,1,FADE_INTERVAL,NULL); return TRUE;
 }
 BOOL power_dialog_translate(MSG *message)
 {

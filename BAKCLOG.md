@@ -648,3 +648,43 @@ Validation: 493 Wine64/Xvfb checks each at 800x600x24 and 640x480x16, including
 - [ ] Retry Enable in Win95 with the originally absent key, reopen native
       Control Panel and verify the settings item. The target-system result
       remains a VM check; no actual Win95 profile-API execution is claimed.
+
+
+## 2026-11-04: buffered button paints and first frame before resource preparation
+
+The new 18-second Win95/86Box recording shows a white power-button rectangle
+around Cancel, with slow progressive dimming and repeated open/cancel actions.
+Own BS_OWNERDRAW BUTTONs still delegated WM_PAINT to old USER, which can erase
+before WM_DRAWITEM. Apply the reference Explorer95 LinkProc approach through a
+shared painted_button.h: suppress separate erase, compose the complete button
+client in a small compatible buffer, and forward native input/state messages.
+Cover power, submit and all three choice actions; buffer the choice client too.
+Do not touch the foreign Windows password control. Parent damage only repaints
+custom buttons intersecting the damage bounds, retaining full-damage repair.
+
+Cancel formerly cleared choice before restoring enabled states and completing
+teardown. Keep closing/shade in the active guard, restore input beneath the
+cover, then remove windows/redraw/restore focus. Reentrant timers cannot lift the
+canvas through the shade. Fade now uses elapsed phases and a combined transform
+to skip stale steps on slow drivers without a second full-screen pixel buffer.
+
+The user also requested appearance before the stock Win95 logon dialog. Remove
+profile/TTF work from the first-display path: draw a complete startup canvas with
+OS fonts before profiles_load/bundled_fonts_load, then apply bundled typography
+and select the usual view. preparing_canvas blocks reentrant auth/ready timers;
+quiet-start timeout begins afterward. Startup registrations and genuine OS-ready,
+one-second Welcome and post-DestroyWindow shell handoff are retained. Actual
+Win95 scheduling relative to the native dialog was not measured in the cloud.
+
+Validation: 506 checks per mode under Wine64/Xvfb at 640x480x16, 800x600x24 and
+1024x768x24, including 59 power, 66 session, 64 startup and 47 CPL checks. Added
+strict erase-to-white pixel/paint-path checks, partial-damage idleness, real native
+BM_CLICK, 100ms-per-paint fade slowdown, idle completion, reentrant cancellation
+and first-frame pixels/order before profile/TTF work. PE/resource audits pass
+with 175/51/15 reviewed imports (only added API: classic Win95 CallWindowProcA),
+exact helper embedding and git diff --check. Rebuilt tracked EXE included.
+
+- [ ] In target Win95, repeat power open/cancel while the account is collapsed
+      and expanded, then genuine password entry/rescue/logoff.
+- [ ] Compare cold-boot first-frame timing with the stock dialog under the same
+      86Box configuration; no claim of guaranteed OS ordering or vblank timing.
