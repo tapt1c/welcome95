@@ -528,3 +528,27 @@ resources and covers denied writes, explicit flush failures, zero-success flush,
 readback mismatch, registry-only upgrade, loaded-version rollback and a foreign
 INI change between apply and rollback. All launches are inert callbacks.
 The native PE audit additionally validates the x86 icon and both STRINGTABLEs.
+
+
+## Missing MMCPL key and panel-ini-owner / 170
+
+The user reported panel-ini-owner/code 170 and confirmed there was no Welcome95
+entry in CONTROL.INI. The CPL fixture now includes the production backend behind
+a narrow profile-query adapter that normalizes a nonprinting missing-key default
+to empty. With the preceding 1fa29fe backend this reproduces code 170 before
+installation; the fixed backend enumerates keys and permits the absent entry.
+The exact profile-API return in the target VM has not been captured.
+
+Check absent CONTROL.INI, a section with only unrelated entries, a present-empty
+mixed-case key, an actual foreign value and a truncated key inventory. The same
+adapter remains active through the existing real DLL/private registry/INI
+installation, update, rollback and unregistration cases. No production path may
+request a nonprinting default marker. Existing empty/foreign entries stay protected.
+
+
+Current validation after this fix: 493 checks each at 800x600x24 and 640x480x16
+under Wine64/Xvfb, including 47 CPL, 64 startup and 64 session checks. Main,
+bootstrap and CPL PE/resource audits pass with unchanged import counts. A
+separate private probe compiles the preceding backend and the fixed backend
+against the same normalized-default adapter: 170/panel-ini-owner versus success.
+Retry Enable and native Control Panel discovery in the target Win95 VM.

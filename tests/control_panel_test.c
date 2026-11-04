@@ -2,6 +2,24 @@
 #include <windows.h>
 #include <cpl.h>
 #include "../src/control_panel.h"
+/* Model normalization of a nonprinting missing-key default while retaining
+   real private INI enumeration/values, registry entries, DLLs and rollback. */
+static int marker_requests,truncate_keys;
+static DWORD WINAPI checked_profile_string(LPCSTR section,LPCSTR key,LPCSTR fallback,
+    LPSTR text,DWORD size,LPCSTR file)
+{
+    if(section && !lstrcmpiA(section,"MMCPL")) {
+        if(!key && truncate_keys) { if(size) text[0]=0; return size>2 ? size-2 : 0; }
+        if(key && fallback && fallback[0] && (BYTE)fallback[0]<32) {
+            ++marker_requests;
+            return GetPrivateProfileStringA(section,key,"",text,size,file);
+        }
+    }
+    return GetPrivateProfileStringA(section,key,fallback,text,size,file);
+}
+#define GetPrivateProfileStringA checked_profile_string
+#include "../src/control_panel.c"
+#undef GetPrivateProfileStringA
 static HANDLE output;
 static int failures,launches,fail_shell,fail_panel_write,fail_panel_flush,drop_panel_write,zero_panel_flush;
 static char launched_app[MAX_PATH],launched_command[MAX_PATH+4];
@@ -26,7 +44,7 @@ static BOOL WINAPI inert_launch(LPCSTR app,LPSTR command,LPSECURITY_ATTRIBUTES p
     if(!child->hProcess || !child->hThread) ExitProcess(2);
     return TRUE;
 }
-static BOOL WINAPI write_ini(LPCSTR section,LPCSTR key,LPCSTR value,LPCSTR file)
+static BOOL WINAPI write_startup_ini(LPCSTR section,LPCSTR key,LPCSTR value,LPCSTR file)
 {
     if(section && fail_shell) { fail_shell=0; return FALSE; }
     return WritePrivateProfileStringA(section,key,value,file);
@@ -43,8 +61,15 @@ static BOOL WINAPI write_panel_ini(LPCSTR section,LPCSTR key,LPCSTR data,LPCSTR 
 }
 static BOOL ini_is(const char *ini,const char *name,const char *text)
 {
-    char actual[MAX_PATH]; DWORD length=GetPrivateProfileStringA("MMCPL",name,"\001",actual,sizeof(actual),ini);
-    return text ? (!lstrcmpA(actual,text)) : (length==1 && actual[0]==1);
+    static char keys[4096];
+    char actual[MAX_PATH],*key; BOOL present=FALSE;
+    DWORD length=GetPrivateProfileStringA("MMCPL",NULL,"",keys,sizeof(keys),ini);
+    if(length>=sizeof(keys)-2) return FALSE;
+    for(key=keys; *key; key+=lstrlenA(key)+1) if(!lstrcmpiA(key,name)) { present=TRUE; break; }
+    if(!present) return text==NULL;
+    if(!text) return FALSE;
+    GetPrivateProfileStringA("MMCPL",name,"",actual,sizeof(actual),ini);
+    return !lstrcmpA(actual,text);
 }
 static void value(const char *key,const char *name,DWORD type,const void *data,DWORD size)
 {
@@ -106,7 +131,7 @@ void panel_test_entry(void)
     const char *stage;
     union { FARPROC raw; Applet applet; Host host; } address;
     Applet applet,updated; Host host;
-    NEWCPLINFOA info; CPLINFO static_info; char title[32],description[128];
+    NEWCPLINFOA info; CPLINFO static_info; char title[32],description[128],probe[MAX_PATH]; BOOL present;
     output=CreateFileA("control-panel-test.log",GENERIC_WRITE,0,NULL,CREATE_ALWAYS,0,NULL);
     if(output==INVALID_HANDLE_VALUE) ExitProcess(2);
     file=CreateFileA("build\\w95panel64.cpl",GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
@@ -126,11 +151,32 @@ void panel_test_entry(void)
     panel.executable=executable; panel.image=image; panel.size=size;
     wsprintfA(control_ini,"%s\\CONTROL.INI",directory);
     panel.control_ini=control_ini; panel.write_ini=write_panel_ini;
-    WritePrivateProfileStringA("MMCPL","Unrelated","KEEP.CPL",control_ini);
     startup.root=HKEY_CURRENT_USER; startup.service_key=services; startup.run_key=run; startup.once_key=once;
-    startup.backup_key=backup; startup.executable=executable; startup.ini=ini; startup.write_ini=write_ini;
+    startup.backup_key=backup; startup.executable=executable; startup.ini=ini; startup.write_ini=write_startup_ini;
     startup.boot_directory=logon; startup.boot_image=boot_image; startup.boot_size=sizeof(boot_image);
     value(cpls,"Unrelated",REG_SZ,"KEEP",5);
+    check(checked_profile_string("MMCPL",PANEL_VALUE,"\001",probe,sizeof(probe),control_ini)==0,
+        "the strict profile fixture returns an empty normalized default for an absent INI key");
+    marker_requests=0;
+    check(!read_ini(&panel,probe,&present) && !present && !probe[0],
+        "a missing CONTROL.INI is correctly classified as having no Welcome95 registration");
+    WritePrivateProfileStringA("OtherSection","Keep","OTHER",control_ini);
+    WritePrivateProfileStringA("MMCPL","Unrelated","KEEP.CPL",control_ini);
+    check(!read_ini(&panel,probe,&present) && !present && !probe[0],
+        "an existing MMCPL section without Welcome95 is not mistaken for a foreign owner");
+    WritePrivateProfileStringA("MMCPL","wElCoMe95","",control_ini);
+    check(!read_ini(&panel,probe,&present) && present && !probe[0] &&
+        panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage)==ERROR_BUSY &&
+        ini_is(control_ini,PANEL_VALUE,"") && no_cpl(logon) && !record_read(storage,&record),
+        "an existing empty mixed-case Welcome95 key stays protected rather than becoming an absent key");
+    WritePrivateProfileStringA("MMCPL",PANEL_VALUE,"FOREIGN.CPL",control_ini);
+    check(!read_ini(&panel,probe,&present) && present && !lstrcmpA(probe,"FOREIGN.CPL"),
+        "case-insensitive key enumeration still reads an actual foreign registration");
+    WritePrivateProfileStringA("MMCPL",PANEL_VALUE,NULL,control_ini);
+    truncate_keys=1; error=panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage); truncate_keys=0;
+    check(error==ERROR_MORE_DATA && !lstrcmpA(stage,"panel-ini-keys") && no_cpl(logon) &&
+        !record_read(storage,&record) && entry_is(cpls,PANEL_VALUE,NULL) && shell_is(ini,"INERTSHELL.EXE /test"),
+        "a truncated key inventory stops before claiming absence or changing startup");
     fail_panel_write=1; error=panel_startup_configure(&panel,&startup,TRUE,&migrated,&stage);
     check(error==ERROR_ACCESS_DENIED && !lstrcmpA(stage,"panel-ini-write") &&
         entry_is(cpls,PANEL_VALUE,NULL) && !record_read(storage,&record) && no_cpl(logon) &&
@@ -266,6 +312,7 @@ void panel_test_entry(void)
     FreeLibrary(second); FreeLibrary(first);
     RegDeleteKeyA(HKEY_CURRENT_USER,cpls); RegDeleteKeyA(HKEY_CURRENT_USER,storage); RegDeleteKeyA(HKEY_CURRENT_USER,services);
     RegDeleteKeyA(HKEY_CURRENT_USER,run); RegDeleteKeyA(HKEY_CURRENT_USER,once); RegDeleteKeyA(HKEY_CURRENT_USER,backup); RegDeleteKeyA(HKEY_CURRENT_USER,base);
+    check(!marker_requests,"all applet install upgrade rollback and removal paths avoid nonprinting missing-key defaults");
     cleanup(directory); check(RemoveDirectoryA(directory),"remove only private Control Panel fixtures");
     CloseHandle(output); ExitProcess(failures ? 1 : 0);
 }

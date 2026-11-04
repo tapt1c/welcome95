@@ -615,3 +615,36 @@ embedded byte-for-byte in the rebuilt tracked EXE. git diff --check passes.
       launch settings, Disable and reenable. Preserve loaded old CPL files.
 Target Win95 GDI teardown, shell discovery and authentication are not claimed
 as executed by the cloud fixtures.
+
+
+## 2026-11-04: false panel-ini-owner / 170 with no Welcome95 key
+
+The target W95START.LOG reports panel-ini-owner/code 170, and the user confirms
+there is no Welcome95 entry in CONTROL.INI. The backend inferred presence from
+a nonprinting \001 missing-key default surviving GetPrivateProfileStringA.
+Normalizing that default to empty makes the old code classify absence as an
+existing foreign entry. A private probe using the actual preceding 1fa29fe
+backend reproduces result=170/stage=panel-ini-owner under that API model; the
+fixed backend returns success. The exact VM profile-API return was not captured.
+
+Read MMCPL key names first, case-insensitively, then read the value only if the
+Welcome95 key exists. Missing file/section/key is absent; an existing empty key
+remains present/protected. Reject truncated key inventories before claiming
+absence or mutating registration/startup. Ownership checks and rollback are
+retained; no foreign entry adoption or automatic deletion was added.
+
+The CPL suite now includes the production backend behind the narrow profile-API
+adapter, with all lifecycle tests running under normalized-default semantics.
+Seven added checks cover the adapter contract, absent file, unrelated-only
+section, empty mixed-case key, actual foreign value, truncated inventory and
+avoidance of nonprinting defaults throughout installation/update/rollback/removal.
+The bounded key buffer uses static storage to keep the CRT-free build free of
+stack-probe helper imports. Source changes are confined to CPL presence detection.
+
+Validation: 493 Wine64/Xvfb checks each at 800x600x24 and 640x480x16, including
+47 CPL, 64 startup and 64 session checks. Production main/boot/CPL audits pass
+(174/51/15 imports); helpers match the embedded bytes and git diff --check passes.
+
+- [ ] Retry Enable in Win95 with the originally absent key, reopen native
+      Control Panel and verify the settings item. The target-system result
+      remains a VM check; no actual Win95 profile-API execution is claimed.

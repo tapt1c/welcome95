@@ -50,13 +50,22 @@ static DWORD write_value(const PanelConfig *c,BOOL record,const void *data,DWORD
 /* Win9x's legacy discovery route keeps the applet itself under LOGON. */
 static DWORD read_ini(const PanelConfig *c,char *entry,BOOL *present)
 {
+    static char keys[4096];
+    char *key;
     DWORD length;
-    *present=FALSE;
+    *present=FALSE; entry[0]=0;
     if(!c->control_ini || !*c->control_ini || !c->write_ini)
         return note(c,"panel-ini-path",ERROR_INVALID_PARAMETER);
-    length=GetPrivateProfileStringA("MMCPL",PANEL_VALUE,"\001",entry,MAX_PATH,c->control_ini);
+    /* A missing-key default can be normalized by legacy profile APIs. Query
+       actual key names instead: empty values are present and remain protected. */
+    length=GetPrivateProfileStringA("MMCPL",NULL,"",keys,sizeof(keys),c->control_ini);
+    if(length>=sizeof(keys)-2) return note(c,"panel-ini-keys",ERROR_MORE_DATA);
+    for(key=keys; *key; key+=lstrlenA(key)+1) {
+        if(!lstrcmpiA(key,PANEL_VALUE)) { *present=TRUE; break; }
+    }
+    if(!*present) return 0;
+    length=GetPrivateProfileStringA("MMCPL",PANEL_VALUE,"",entry,MAX_PATH,c->control_ini);
     if(length>=MAX_PATH-1) return note(c,"panel-ini-data",ERROR_MORE_DATA);
-    *present=!(length==1 && entry[0]==1);
     return 0;
 }
 static DWORD write_ini(const PanelConfig *c,const char *entry)

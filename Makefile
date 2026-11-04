@@ -97,6 +97,6 @@ build/w95panel64.cpl: src/control_panel_launcher.c src/control_panel.h src/ui_te
 	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) -DW95_PANEL_TEST -shared src/control_panel_launcher.c build/panel-assets64.o -o $@ -mwindows -nostdlib -Wl,--entry,DllMain -luser32 -ladvapi32 -lkernel32
 
 build/control_panel_test64.exe: tests/control_panel_test.c src/control_panel.c src/control_panel.h src/startup.c src/startup.h build/w95panel64.cpl Makefile
-	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/control_panel_test.c src/control_panel.c src/startup.c -o $@ -mwindows -nostdlib -Wl,--entry,panel_test_entry -luser32 -ladvapi32 -lkernel32
+	$(TEST_CC) $(filter-out -march=i386 -mtune=i386,$(CFLAGS)) tests/control_panel_test.c src/startup.c -o $@ -mwindows -nostdlib -Wl,--entry,panel_test_entry -luser32 -ladvapi32 -lkernel32
 
 build/welcome95.exe build/topmost_test64.exe build/preview64.exe build/render_test64.exe build/power_test64.exe build/layout_test64.exe build/session_test64.exe build/ui_test64.exe: src/control_panel.c src/control_panel.h

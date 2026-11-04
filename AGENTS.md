@@ -293,3 +293,9 @@ LastError and verify the entry. Test first install, registry-only upgrade,
 loaded-version rollback and an INI replacement made after the snapshot.
 Explorer95's simplified Control Panel is a fixed list; its all-options view uses
 the system namespace. Do not claim to have changed that other product's list.
+
+
+Detect MMCPL key presence by enumerating actual key names, not by expecting a
+nonprinting default marker to survive GetPrivateProfileStringA. Missing and
+present-empty entries are distinct ownership states; reject truncated inventories.
+Keep the strict profile-API fixture and run the full panel lifecycle through it.
