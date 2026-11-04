@@ -131,6 +131,7 @@ void power_dialog_close(void)
 }
 static LRESULT CALLBACK shade_proc(HWND window,UINT message,WPARAM wp,LPARAM lp)
 {
+    if(message==WM_SETCURSOR && LOWORD(lp)==HTCLIENT) { SetCursor(LoadCursor(NULL,IDC_ARROW)); return TRUE; }
     if(message==WM_ERASEBKGND) return TRUE;
     if(message==WM_PAINT) {
         PAINTSTRUCT paint;
@@ -212,6 +213,9 @@ static void perform_action(int id)
 static LRESULT CALLBACK choice_proc(HWND window,UINT message,WPARAM wp,LPARAM lp)
 {
     switch(message) {
+    case WM_SETCURSOR:
+        if(LOWORD(lp)==HTCLIENT) { SetCursor(LoadCursor(NULL,IDC_ARROW)); return TRUE; }
+        break;
     case WM_ERASEBKGND: return TRUE;
     case WM_PAINT: {
         PAINTSTRUCT paint; RECT rect,body,title;

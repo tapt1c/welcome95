@@ -688,3 +688,48 @@ exact helper embedding and git diff --check. Rebuilt tracked EXE included.
       and expanded, then genuine password entry/rescue/logoff.
 - [ ] Compare cold-boot first-frame timing with the stock dialog under the same
       86Box configuration; no claim of guaranteed OS ordering or vblank timing.
+
+
+## 2026-11-04: hidden-only rescue, pointer and earlier visual cover
+
+Removed Trouble signing in? in both languages, including creation, fallback,
+resize, font update and WM_COMMAND paths. Hidden Ctrl+Alt+Shift+L remains the
+sole UI recovery mechanism and is not advertised in the product interface.
+
+The user clarified that the mouse pointer flickers on Turn off computer. Power
+opening is now posted after native BUTTON click/capture processing finishes,
+with duplicate-request coalescing. Our own UI surfaces consistently select the
+system arrow; native password caret/input behavior is retained. SetCursor is a
+classic Win95 API and the only new main import.
+
+The stock gray form still preceded the larger welcome frontend. /welcome in
+W95BOOT now paints a small opaque cover before CreateProcess, then waits for
+ControllerReady/process exit while pumping messages. Ten-second timeout removes
+the visual cover only, without authentication/close signals or terminating the
+provider. Duplicate controllers/previews skip it. The existing resident controller
+also becomes a control-free wait cover on committed end-session, avoiding the
+wallpaper gap until the new credential canvas is safely presented. Its temporary
+paint fonts are not retained across teardown; genuine readiness and shell gates
+remain unchanged. Updating the bootstrap requires the standard Disable/update/
+Enable/reboot flow; an active repeated Enable intentionally retains its old gate.
+
+Validation: 519 Wine64/Xvfb checks per mode at 640x480x16, 800x600x24 and
+1024x768x24; 64 power, 74 session, 64 startup and 47 CPL checks. Added delayed-
+frontend early-cover pixels, readiness/failure/duplicate lifecycle, untouched auth
+signals, persistent controller-cover lifetime, posted BM_CLICK and stable arrow
+checks. The first test exposed that visibility precedes completed painting; it
+now polls the actual cover pixels before the fake frontend becomes ready.
+Main/boot/CPL audits pass with 176/70/15 imports; boot adds the existing classic
+GDI32 paint APIs (four system DLLs), no modern APIs/CRT/TLS. Helpers are embedded
+byte-for-byte and git diff --check passes.
+
+The video additionally shows Internat failing after logon. The user supplied
+Details: invalid page fault in module <unknown> at 0000:00000009, and suspects
+Explorer95. This does not locate the failing module/callback; no exact cause or
+crash fix is claimed. Read-only inspection of the reference Explorer95 source
+is not target execution. No Internat process/startup setting or other repo changed.
+
+- [ ] On Win95/86Box, check arrow stability on power open/cancel with and without
+      native input, early cover at cold boot and wait cover during logoff.
+- [ ] Isolate Internat with Welcome95 disabled and the same Explorer95 shell;
+      then inspect the failing module/callback if reproducible. Do not hide it.

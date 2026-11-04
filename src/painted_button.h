@@ -10,6 +10,9 @@ typedef struct {
 static LRESULT CALLBACK painted_button_proc(HWND window,UINT message,WPARAM wp,LPARAM lp)
 {
     PaintedButtonState *state=(PaintedButtonState *)GetWindowLongPtrA(window,GWLP_USERDATA);
+    if(state && message==WM_SETCURSOR && LOWORD(lp)==HTCLIENT) {
+        SetCursor(LoadCursor(NULL,IDC_ARROW)); return TRUE;
+    }
     if(state && message==WM_ERASEBKGND) return TRUE;
     if(state && message==WM_PAINT) {
         PAINTSTRUCT paint; DRAWITEMSTRUCT item;

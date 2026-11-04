@@ -69,3 +69,10 @@ Slow paints skip obsolete phases using one combined desaturation/dimming transfo
 per pixel, rather than replaying sixteen full-screen copies. No alpha/layered
 window API, extra full-screen pixel buffer, OS power change or forced action was
 added. The driver still determines the time taken to present each physical frame.
+
+
+Power clicks now post a separate SHOW_POWER message: screenshot capture and dialog
+creation run after the native BUTTON finishes its mouse/capture processing.
+Duplicate pending requests coalesce. Our welcome/buttons/choice/shade handle
+WM_SETCURSOR with the shared system arrow; the foreign password field keeps its
+native cursor/caret behavior. No system-wide cursor replacement is performed.

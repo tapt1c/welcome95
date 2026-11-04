@@ -231,10 +231,10 @@ void session_test_entry(void)
     const char *mode=option();
     char temporary[MAX_PATH],original[STARTUP_TEXT],probe_pending[MAX_PATH];
     WNDCLASSA cls;
-    HWND competitor,foreground,old_screen,notifier,provider,notice;
+    HWND competitor,foreground,old_screen,notifier,provider,notice,cover;
     HANDLE startup_worker,shell_worker,notifier_worker,notifier_ready,file,provider_worker;
-    DWORD start,written,launched,closed_at,publications_before;
-    HDC dc; COLORREF pixel;
+    DWORD start,written,launched,closed_at,publications_before,child_code;
+    HDC dc; COLORREF pixel; BOOL cover_painted=FALSE;
     int i,x,y,width;
 
     instance=GetModuleHandleA(NULL); GetModuleFileNameA(NULL,exe_path,sizeof(exe_path));
@@ -251,6 +251,19 @@ void session_test_entry(void)
             CloseHandle(file);
             if(!MoveFileA(probe_pending,marker)) ExitProcess(3);
             Sleep(200); ExitProcess(0);
+        }
+        if(!lstrcmpA(mode,"/boot-welcome")) ExitProcess(bootstrap_forward(HKEY_CURRENT_USER,backup_key,"/welcome"));
+        if(!lstrcmpA(mode,"/welcome")) {
+            HANDLE prepared; HWND canvas; char fail[4];
+            if(FindWindowA("Welcome95.Controller",NULL)) ExitProcess(0);
+            Sleep(600); /* Simulate mapping/initializing the larger frontend. */
+            if(GetEnvironmentVariableA("WELCOME95_TEST_COVER_FAIL",fail,sizeof(fail))) ExitProcess(3);
+            prepared=CreateEventA(NULL,TRUE,FALSE,CONTROLLER_EVENT);
+            canvas=CreateWindowExA(WS_EX_TOPMOST,"STATIC","Inert prepared frontend",WS_POPUP|WS_VISIBLE|SS_WHITERECT,
+                0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),NULL,NULL,instance,NULL);
+            if(!prepared || !canvas) ExitProcess(2);
+            UpdateWindow(canvas); SetEvent(prepared); Sleep(200);
+            DestroyWindow(canvas); CloseHandle(prepared); ExitProcess(0);
         }
         if(!lstrcmpA(mode,"/boot-shell")) ExitProcess(bootstrap_forward(HKEY_CURRENT_USER,backup_key,"/shell"));
         if(!lstrcmpA(mode,"/boot-startup")) ExitProcess(bootstrap_forward(HKEY_CURRENT_USER,backup_key,"/startup"));
@@ -331,11 +344,46 @@ void session_test_entry(void)
     logoff_event=CreateEventA(NULL,TRUE,FALSE,LOGOFF_EVENT); ended_event=CreateEventA(NULL,TRUE,FALSE,ENDED_EVENT); controller_event=CreateEventA(NULL,TRUE,FALSE,CONTROLLER_EVENT);
     stop_event=CreateEventA(NULL,TRUE,FALSE,STOP_EVENT);
     ResetEvent(ready_event); ResetEvent(closed_event); ResetEvent(logoff_event); ResetEvent(ended_event); ResetEvent(stop_event);
+    ResetEvent(controller_event);
+    shell_worker=worker("/boot-welcome"); cover=NULL; start=GetTickCount();
+    while((!cover || !IsWindowVisible(cover)) && (DWORD)(GetTickCount()-start)<5000) {
+        pump(10); cover=FindWindowA("Welcome95.Bootstrap",NULL);
+    }
+    check(shell_worker && cover && IsWindowVisible(cover),"the small bootstrap covers the desktop before a delayed frontend is initialized");
+    do {
+        dc=cover && IsWindow(cover) ? GetDC(cover) : NULL;
+        cover_painted=dc && pixel_near(GetPixel(dc,10,10),RGB(0,48,156)) &&
+            pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,200),RGB(90,126,220));
+        if(dc) ReleaseDC(cover,dc);
+        if(cover_painted || !IsWindow(cover)) break;
+        pump(10);
+    } while((DWORD)(GetTickCount()-start)<5000);
+    check(cover_painted,"the early cover paints the welcome bands and background without relying on frontend resources");
+    check(finished(shell_worker,5000) && !IsWindow(cover) && WaitForSingleObject(controller_event,0)==WAIT_OBJECT_0,
+        "the bootstrap removes its cover after the inert frontend has actually painted and announced initialization");
+    CloseHandle(shell_worker); pump(250);
+    check(WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+        "cover handoff never publishes authentication or a shell close acknowledgement");
+    ResetEvent(controller_event); SetEnvironmentVariableA("WELCOME95_TEST_COVER_FAIL","1");
+    shell_worker=worker("/boot-welcome"); start=GetTickCount();
+    while(shell_worker && WaitForSingleObject(shell_worker,0)!=WAIT_OBJECT_0 && (DWORD)(GetTickCount()-start)<5000) pump(10);
+    child_code=0;
+    check(shell_worker && GetExitCodeProcess(shell_worker,&child_code) && child_code==3 &&
+        !FindWindowA("Welcome95.Bootstrap",NULL) && WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT &&
+        WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+        "a failing frontend releases the early cover without cancelling native login or fabricating readiness");
+    if(shell_worker) CloseHandle(shell_worker);
+    SetEnvironmentVariableA("WELCOME95_TEST_COVER_FAIL",NULL); ResetEvent(controller_event);
     controller=CreateWindowA("Welcome95.Controller","Test controller",WS_OVERLAPPED,0,0,0,0,NULL,NULL,instance,NULL); KillTimer(controller,TICK);
     single_profile_fixture=TRUE;
     release_ui_fonts(); early_init_probe=TRUE;
     begin_logon_cycle(FALSE); early_init_probe=FALSE; KillTimer(screen,TICK); SetEvent(controller_event);
     check(profiles_saw_frame && fonts_saw_frame,"the first complete startup frame is visible before profile discovery or embedded font extraction");
+    old_screen=screen; shell_worker=worker("/boot-welcome");
+    check(finished(shell_worker,5000) && screen==old_screen && IsWindowVisible(screen),
+        "a duplicate welcome bootstrap leaves an existing controller and canvas in place");
+    if(shell_worker) CloseHandle(shell_worker);
+
     check(init_timer_guarded && !preparing_canvas,"a reentrant ready timer cannot authenticate or finish the canvas during resource preparation");
     check(profiles_count()==1 && status_view==VIEW_STARTING && !require_account_choice && !automatic_attempted,
         "a fresh controller still permits its initial one-account quiet startup");
@@ -384,6 +432,9 @@ void session_test_entry(void)
     SendMessageA(controller,WM_TIMER,TICK,0);
     check(IsWindow(controller) && !screen && awaiting_logon && !body_font && !session_running,
         "committed logoff retires session GDI resources without creating children during desktop teardown");
+    check(controller_cover && IsWindowVisible(controller) && GetWindow(controller,GW_CHILD)==NULL,
+        "logoff keeps a complete visual cover in the existing service window without creating credential controls");
+
     for(i=0;i<5;++i) SendMessageA(controller,WM_TIMER,TICK,0);
     check(!screen && awaiting_logon && closed_publications==publications_before &&
         WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
@@ -399,6 +450,8 @@ void session_test_entry(void)
     SendMessageA(controller,WM_TIMER,TICK,0); if(screen) KillTimer(screen,TICK);
     check(provider && screen && status_view==VIEW_LOGIN && !awaiting_logon && !session_running,
         "a new real provider triggers the next login canvas without exiting the controller");
+    check(!controller_cover && !IsWindowVisible(controller),"the waiting cover is hidden only after the replacement canvas is fully presented");
+
     check(!visible_during_creation && !premature_paints && IsWindowVisible(screen),
         "canvas construction stays hidden and first visible painting has its published window handle");
     dc=GetDC(screen); i=(GetSystemMetrics(SM_CXSCREEN)-10)*128/GetSystemMetrics(SM_CXSCREEN);
@@ -410,7 +463,7 @@ void session_test_entry(void)
     ReleaseDC(screen,dc); consume_creation_damage=FALSE; DestroyWindow(competitor);
     check(!finishing && automatic_attempted && require_account_choice && !pending_profile && selected_profile==0,
         "new logon resets in-flight state and selection while requiring manual account choice");
-    check(profiles_count()==1 && !account_open() && !IsWindowVisible(GetDlgItem(screen,ID_SUBMIT)),
+    check(profiles_count()==1 && !account_open() && !GetDlgItem(screen,106) && !IsWindowVisible(GetDlgItem(screen,ID_SUBMIT)),
         "even one account is collapsed after logoff and cannot submit before selection");
     check(WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
         "new logon clears the previous session's readiness and close acknowledgements");
@@ -541,7 +594,7 @@ void session_test_entry(void)
         }
     }
     SendMessageA(controller,WM_HOTKEY,ID_RESCUE_HOTKEY,0);
-    check(rescue_mode && !IsWindowVisible(screen) && IsWindowVisible(provider) &&
+    check(rescue_mode && !IsWindowVisible(screen) && !GetDlgItem(screen,106) && IsWindowVisible(provider) &&
         (GetWindowLongA(provider,GWL_STYLE)&WS_CAPTION) && !native_logon_attached(),
         "the hidden controller shortcut restores the real native dialog and hides the canvas");
     check(WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,

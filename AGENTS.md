@@ -20,7 +20,7 @@ with a successful click, cached-password comparison or synthetic success signal.
 
 Keep native-control parents, IDs and handlers intact. Save and restore geometry,
 styles, visibility and Cancel state. Unsupported dialogs stay behind the canvas;
-Trouble signing in? explicitly restores their normal view. Keep logon error
+The deliberately hidden rescue shortcut explicitly restores their normal view. Keep logon error
 messages accessible. Esc/Alt+F4 resistance is not a security boundary.
 
 ## Responsive UI
@@ -317,3 +317,28 @@ extraction. Keep preparing_canvas guarded against reentrant timers, refresh owne
 control fonts after font recreation, and start quiet-attempt timeout afterward.
 Never claim a Win95 timing comparison from Wine; validate RunServices/provider
 ordering separately on the target OS. Preserve real readiness and shell gates.
+
+
+The user explicitly removed the Trouble signing in? button. Do not recreate it
+in initial, fallback, display-change or repeated-login states. Keep the existing
+hidden Ctrl+Alt+Shift+L native rescue with no new hint or replacement UI control.
+
+
+## Early cover and pointer stability
+
+The /welcome bootstrap may paint an opaque early cover before CreateProcess of
+the larger frontend. Wait only for ControllerReady/process exit with a bounded,
+message-pumping wait. Cover completion/timeout must not publish SessionReady or
+CanvasClosed, terminate the provider or collect/submit credentials. Existing
+controllers/previews must not gain duplicate covers. The bootstrap now uses
+classic GDI32 drawing, so audit its four system DLLs as well as the x86 main/CPL.
+
+During committed logoff, the service may reuse its existing controller HWND as a
+font/control-free cover while waiting for the new provider. Do not create a new
+credential canvas during teardown; release old session resources as before.
+Draw temporary cover fonts only within a paint, hide this cover after the new
+canvas is presented, and dismiss it for native rescue or frontend failure.
+
+Queue power opening after BUTTON click processing returns, and keep a normal
+arrow on our own UI surfaces. Do not override the foreign native Edit's caret
+or pointer, and do not apply system-wide cursor changes.

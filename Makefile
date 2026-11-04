@@ -75,7 +75,7 @@ build/session_test64.exe: src/bootstrap.c src/bootstrap.h tests/session_test.c s
 
 
 build/w95boot.exe: src/bootstrap.c src/bootstrap.h src/startup.c src/startup.h Makefile
-	$(CC) $(CFLAGS) src/bootstrap.c src/startup.c -o $@ $(LDFLAGS) -Wl,--entry,_boot_entry -luser32 -ladvapi32 -lkernel32
+	$(CC) $(CFLAGS) src/bootstrap.c src/startup.c -o $@ $(LDFLAGS) -Wl,--entry,_boot_entry -luser32 -lgdi32 -ladvapi32 -lkernel32
 
 # Keep every consumer of ANSI UI text current, including the embedded bootstrap.
 build/welcome95.exe build/w95boot.exe build/native_logon_test.exe build/native_logon_test64.exe build/topmost_test64.exe build/preview64.exe build/profiles_test64.exe build/render_test64.exe build/power_test64.exe build/layout_test64.exe build/session_test64.exe: src/ui_text.h
@@ -101,4 +101,6 @@ build/control_panel_test64.exe: tests/control_panel_test.c src/control_panel.c s
 
 build/welcome95.exe build/topmost_test64.exe build/preview64.exe build/render_test64.exe build/power_test64.exe build/layout_test64.exe build/session_test64.exe build/ui_test64.exe: src/control_panel.c src/control_panel.h
 
-build/welcome95.exe build/topmost_test64.exe build/preview64.exe build/render_test64.exe build/power_test64.exe build/layout_test64.exe build/session_test64.exe build/ui_test64.exe: src/painted_button.h
+build/welcome95.exe build/topmost_test64.exe build/preview64.exe build/render_test64.exe build/power_test64.exe build/layout_test64.exe build/session_test64.exe build/ui_test64.exe: src/painted_button.h src/bootstrap.h
+
+build/w95boot.exe build/welcome95.exe build/topmost_test64.exe build/preview64.exe build/render_test64.exe build/power_test64.exe build/layout_test64.exe build/session_test64.exe build/ui_test64.exe: src/early_cover.h

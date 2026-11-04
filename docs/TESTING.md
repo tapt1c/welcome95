@@ -583,3 +583,35 @@ Repeat mouse, keyboard, shade cancellation and genuine native input. Cold boot
 and compare the first startup frame against appearance of the stock dialog.
 Cloud tests do not execute Win95's old USER or establish its service scheduling
 or hardware presentation speed.
+
+
+## Hidden-only rescue, queued power opening and early covers
+
+Current suite: 519 checks each at 800x600x24, 640x480x16 and 1024x768x24 under
+Wine64/Xvfb, including 64 power and 74 session checks. The removed native-rescue
+button (former ID 106) must be absent in Russian UI and repeated-login states;
+the existing hidden hotkey still restores the external native provider without
+submitting credentials or announcing authentication.
+
+A native power BM_CLICK must return with only a pending posted request, before
+snapshot/dialog work begins. Inject a wait pointer into our welcome/button/shade/
+choice clients and verify WM_SETCURSOR restores the arrow. Keep all previous
+white-erase, slow-paint, cancellation and actual native-input regressions.
+
+A separate fake frontend delays initialization for 600ms: the actual bootstrap
+must show and paint its early cover first, then remove it when that frontend
+paints and announces ControllerReady. Poll for the first actual painted pixels;
+IsWindowVisible alone can precede completion of WM_PAINT. Test failing-frontend
+cleanup, duplicate-controller handling and unchanged SessionReady/CanvasClosed.
+After committed logoff, check the same existing controller HWND is visible with
+no child credential controls, and is hidden after the replacement canvas paints.
+
+PE/resource audits: main 176 imports/5 system DLLs; bootstrap 70 imports/4 DLLs
+including classic GDI32; CPL 15 imports/3 DLLs. Exact helper bytes are embedded in
+the tracked x86 EXE. Actual Win95 service scheduling, pointer flicker and physical
+first-frame timing still require the user's 86Box VM.
+
+The supplied Internat screenshot reports an invalid page fault in <unknown> at
+0000:00000009. It does not identify an Explorer95 or Welcome95 module. No crash
+fix or suppression is claimed; compare stock logon with the same shell before
+attributing the fault. No other repository or Internat startup entry was changed.

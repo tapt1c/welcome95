@@ -9,6 +9,8 @@
 #include "startup.h"
 #include "control_panel.h"
 #include "painted_button.h"
+#include "bootstrap.h"
+#include "early_cover.h"
 
 #define APP "Welcome95"
 #define REG_SERVICE "Software\\Microsoft\\Windows\\CurrentVersion\\RunServices"
@@ -19,7 +21,8 @@
 #define CLOSED_EVENT "Welcome95.CanvasClosed"
 #define LOGOFF_EVENT "Welcome95.LogoffCommitted"
 #define ENDED_EVENT "Welcome95.SessionEnded"
-#define CONTROLLER_EVENT "Welcome95.ControllerReady"
+#define CONTROLLER_EVENT BOOTSTRAP_READY_EVENT
+#define SHOW_POWER (WM_USER+72)
 #define SHELL_STARTED (WM_USER+70)
 #define SESSION_STARTING (WM_USER+71)
 #define ENDSESSION_LOGOFF_95 0x80000000UL
@@ -28,7 +31,6 @@
 #define ID_PREVIEW 103
 #define ID_DONE 104
 #define ID_EXIT 105
-#define ID_NATIVE 106
 #define ID_SUBMIT 107
 #define ID_POWER 108
 #define ID_PREV 109
@@ -68,7 +70,7 @@ static StartupConfig startup_config;
 static PanelConfig panel_config;
 static char system_ini[MAX_PATH],control_ini[MAX_PATH],boot_directory[MAX_PATH];
 static BOOL rescue_mode;
-static BOOL preview, finishing, preparing_canvas;
+static BOOL preview, finishing, preparing_canvas, power_pending, controller_cover;
 static DWORD finish_time;
 static HWND login_window;
 static BOOL login_was_topmost;
@@ -440,15 +442,29 @@ static void paint_greeting(HDC dc, int left, int right)
     SetTextColor(dc, RGB(239,247,255));
     label(dc, welcome_font, welcome_text(), text, align | DT_VCENTER | DT_SINGLELINE);
 }
-static void paint_logo_at(HDC dc, int x, int y)
+static void paint_logo_with_font(HDC dc, int x, int y, HFONT font)
 {
     RECT suffix;
     bitmap(dc, 123, x, y, 137, 86);
     SetRect(&suffix, x+115, y+54, x+141, y+86);
     fill(dc, suffix, RGB(90,126,220));
     SetTextColor(dc, RGB(255,156,33));
-    label(dc, body_font, "95", suffix, DT_LEFT | DT_SINGLELINE);
+    label(dc, font, "95", suffix, DT_LEFT | DT_SINGLELINE);
     SetTextColor(dc, RGB(255,255,255));
+}
+static void paint_logo_at(HDC dc,int x,int y) { paint_logo_with_font(dc,x,y,body_font); }
+static void paint_wait_details(HDC dc)
+{
+    HFONT logo_font=CreateFontA(-20,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Arial");
+    HFONT text_font=CreateFontA(-font_pixels(14),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Arial");
+    RECT rect;
+    SetBkMode(dc,TRANSPARENT); SetTextColor(dc,RGB(255,255,255));
+    paint_logo_with_font(dc,cx(435),cy(228),logo_font);
+    SetRect(&rect,cx(208),cy(334),cx(552),cy(385));
+    label(dc,text_font,ui_text("\317\356\344\356\346\344\350\362\345...","Please wait..."),rect,DT_RIGHT|DT_SINGLELINE);
+    DeleteObject(logo_font); DeleteObject(text_font);
 }
 static void paint_status_message(HDC dc, const char *text)
 {
@@ -462,7 +478,7 @@ static void paint_status_message(HDC dc, const char *text)
 static void login_hotkeys(HWND hwnd,BOOL enable);
 static void set_status_view(HWND hwnd, int view)
 {
-    static const int controls[] = { ID_NATIVE, ID_SUBMIT, ID_POWER, ID_PREV, ID_NEXT, ID_PROFILE_SCROLL, ID_DONE, 201 };
+    static const int controls[] = { ID_SUBMIT, ID_POWER, ID_PREV, ID_NEXT, ID_PROFILE_SCROLL, ID_DONE, 201 };
     unsigned int index;
     status_view = view;
     login_hotkeys(hwnd,sign_in_view());
@@ -477,7 +493,6 @@ static void set_status_view(HWND hwnd, int view)
         position_arrow(hwnd);
         ShowWindow(GetDlgItem(hwnd, ID_POWER), SW_SHOWNA);
         position_profile_navigation(hwnd);
-        if (!native_logon_attached()) ShowWindow(GetDlgItem(hwnd, ID_NATIVE), SW_SHOWNA);
     }
     InvalidateRect(hwnd, NULL, FALSE); UpdateWindow(hwnd);
 }
@@ -661,7 +676,7 @@ static void release_logon(void)
     if (login_window && IsWindow(login_window) && !login_was_topmost)
         SetWindowPos(login_window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     login_window = NULL;
-    if (screen) { ShowWindow(GetDlgItem(screen, ID_NATIVE), SW_HIDE); EnableWindow(GetDlgItem(screen, ID_SUBMIT), preview); }
+    if (screen) EnableWindow(GetDlgItem(screen, ID_SUBMIT), preview);
 }
 
 /* One blank-password attempt, authenticated by Windows, never a retry loop. */
@@ -718,7 +733,6 @@ static void allow_logon(void)
         if (!native_logon_user_empty()) profiles_accept_native(native_logon_name());
         if (native_logon_user_empty() && !profiles_count()) {
             native_logon_restore(TRUE);
-            ShowWindow(GetDlgItem(screen, ID_NATIVE), SW_SHOWNA);
             return;
         }
         if (!pending_profile) {
@@ -752,7 +766,6 @@ static void allow_logon(void)
     if (x < 0) x = 0;
     if (y < 0) y = 0;
     SetWindowPos(found, prefer_native ? HWND_TOPMOST : HWND_NOTOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
-    ShowWindow(GetDlgItem(screen, ID_NATIVE), SW_SHOWNA);
     if (prefer_native) SetForegroundWindow(found);
     InvalidateRect(screen, NULL, FALSE);
 }
@@ -842,9 +855,6 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if (preview_status) preview_started = GetTickCount();
         SetTimer(hwnd, TICK, 100, NULL);
         if(sign_in_view()) login_hotkeys(hwnd,TRUE);
-        CreateWindowA("BUTTON", ui_text("\315\345 \363\344\340\270\362\361\377 \342\356\351\362\350?","Trouble signing in?"), WS_CHILD | BS_PUSHBUTTON,
-            rx(625), by(572), 150, 23, hwnd, (HMENU)ID_NATIVE, instance, NULL);
-        SendDlgItemMessageA(hwnd, ID_NATIVE, WM_SETFONT, (WPARAM)small_font, TRUE);
         CreateWindowA("BUTTON", ui_text("\302\356\351\362\350","Sign in"), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             card_x(685), row_y(profile_top(selected_profile)+51), 26, 26, hwnd, (HMENU)ID_SUBMIT, instance, NULL);
         painted_button_install(GetDlgItem(hwnd,ID_SUBMIT),draw_button);
@@ -956,18 +966,22 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             if (preview) { finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd,VIEW_WELCOME_MULTI); }
             else if (!pending_profile) native_logon_submit();
         }
-        if (LOWORD(wp) == ID_POWER) show_power_dialog(hwnd);
+        if (LOWORD(wp) == ID_POWER && !power_pending) {
+            power_pending=PostMessageA(hwnd,SHOW_POWER,0,0);
+        }
         if (preview && LOWORD(wp) == ID_DONE && !finishing) {
             finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd,VIEW_WELCOME_MULTI);
         }
-        if (LOWORD(wp) == ID_NATIVE && login_window) {
-            prefer_native = TRUE;
-            native_logon_restore(TRUE);
-            ShowWindow(GetDlgItem(hwnd, ID_NATIVE), SW_HIDE);
-            SetForegroundWindow(login_window);
-            InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
+    case SHOW_POWER:
+        power_pending=FALSE;
+        if(status_view==VIEW_LOGIN && !finishing && !rescue_mode) {
+            SetCursor(LoadCursor(NULL,IDC_ARROW)); show_power_dialog(hwnd);
         }
         return 0;
+    case WM_SETCURSOR:
+        if(LOWORD(lp)==HTCLIENT) { SetCursor(LoadCursor(NULL,IDC_ARROW)); return TRUE; }
+        break;
     case WM_TIMER:
         if (wp==2 && preview_power) {
             KillTimer(hwnd,2); show_power_dialog(hwnd); return 0;
@@ -1020,9 +1034,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if (status_view == VIEW_LOGIN && native_logon_attached() && !native_logon_layout(x, y, width)) {
             prefer_native = TRUE;
             native_logon_restore(TRUE);
-            ShowWindow(GetDlgItem(hwnd, ID_NATIVE), SW_HIDE);
         }
-        SetWindowPos(GetDlgItem(hwnd, ID_NATIVE), NULL, rx(625), by(572), 150, 23, SWP_NOZORDER | SWP_NOACTIVATE);
         if (preview) {
             SetWindowPos(GetDlgItem(hwnd, 201), NULL, x, y, width - 60, 22, SWP_NOZORDER | SWP_NOACTIVATE);
             SetWindowPos(GetDlgItem(hwnd, ID_DONE), NULL, rx(625), by(572), 150, 23, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -1037,7 +1049,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         power_dialog_close();
         if (escape_hotkey) UnregisterHotKey(hwnd, 1);
         if (close_hotkey) UnregisterHotKey(hwnd, 2);
-        KillTimer(hwnd, TICK); release_logon(); screen = NULL;
+        KillTimer(hwnd, TICK); power_pending=FALSE; release_logon(); screen = NULL;
         if (!monitor_active) PostQuitMessage(0);
         return 0;
     }
@@ -1059,6 +1071,30 @@ static HWND create_canvas(void)
     return screen;
 }
 
+/* Reuse the service's existing window across teardown, without creating a new
+   credential canvas or retaining session font/control handles in the cover. */
+static void show_controller_cover(HWND window)
+{
+    if(controller_cover || !window || !IsWindow(window)) return;
+    controller_cover=TRUE;
+    SetWindowLongA(window,GWL_STYLE,WS_POPUP);
+    SetWindowLongA(window,GWL_EXSTYLE,WS_EX_TOOLWINDOW);
+    SetWindowPos(window,HWND_TOPMOST,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
+        SWP_NOACTIVATE|SWP_SHOWWINDOW);
+    RedrawWindow(window,NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
+}
+static void hide_controller_cover(void)
+{
+    if(!controller_cover) return;
+    if(controller && IsWindow(controller)) {
+        ShowWindow(controller,SW_HIDE);
+        SetWindowLongA(controller,GWL_STYLE,WS_OVERLAPPED);
+        SetWindowLongA(controller,GWL_EXSTYLE,0);
+        SetWindowPos(controller,HWND_NOTOPMOST,0,0,0,0,SWP_NOACTIVATE);
+    }
+    controller_cover=FALSE;
+}
+
 /* A committed end notification precedes completion of Win9x desktop teardown.
    Keep the service, but create no new canvas/children until a new native form
    or a real startup handshake establishes the next session. */
@@ -1066,6 +1102,7 @@ static void await_logon_cycle(void)
 {
     require_account_choice=TRUE;
     ResetEvent(ready_event); ResetEvent(closed_event);
+    show_controller_cover(controller);
     /* Retiring the old session is not an authenticated shell handoff. */
     if(screen && IsWindow(screen)) DestroyWindow(screen);
     release_ui_fonts();
@@ -1097,7 +1134,7 @@ static void begin_logon_cycle(BOOL reset)
         BOOL load_fonts=!body_font;
         if(load_fonts) create_ui_fonts();
         if(!create_canvas()) {
-            preparing_canvas=FALSE;
+            preparing_canvas=FALSE; hide_controller_cover();
             if(stop_event) SetEvent(stop_event);
             if(closed_event) SetEvent(closed_event);
             return;
@@ -1105,19 +1142,19 @@ static void begin_logon_cycle(BOOL reset)
         profiles_load();
         if(load_fonts && bundled_fonts_load(instance)>0) {
             release_ui_font_handles(); create_ui_fonts();
-            SendDlgItemMessageA(screen,ID_NATIVE,WM_SETFONT,(WPARAM)small_font,FALSE);
             SendDlgItemMessageA(screen,ID_DONE,WM_SETFONT,(WPARAM)small_font,FALSE);
         }
     }
     single_started=GetTickCount();
     set_status_view(screen,!preview && !require_account_choice && profiles_count()==1 ? VIEW_STARTING : VIEW_LOGIN);
-    preparing_canvas=FALSE;
+    preparing_canvas=FALSE; hide_controller_cover();
     if(enabled()) startup_rearm(&startup_config);
 }
 static void rescue_native_logon(void)
 {
     HWND found=NULL,popup;
     power_dialog_close();
+    hide_controller_cover();
     if(!screen && awaiting_logon) begin_logon_cycle(TRUE);
     if(screen) {
         rescue_mode=TRUE; prefer_native=TRUE;
@@ -1140,6 +1177,15 @@ static void rescue_native_logon(void)
 static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp)
 {
     switch(message) {
+    case WM_PAINT:
+        if(controller_cover && resident_mode) { early_cover_paint(hwnd,paint_wait_details); return 0; }
+        break;
+    case WM_ERASEBKGND:
+        if(controller_cover && resident_mode) return TRUE;
+        break;
+    case WM_SETCURSOR:
+        if(controller_cover && LOWORD(lp)==HTCLIENT) { SetCursor(LoadCursor(NULL,IDC_ARROW)); return TRUE; }
+        break;
     case WM_CREATE:
         SetTimer(hwnd,TICK,resident_mode ? 100 : 250,NULL);
         if(resident_mode) RegisterHotKey(hwnd,ID_RESCUE_HOTKEY,MOD_CONTROL|MOD_ALT|MOD_SHIFT,'L');
@@ -1162,6 +1208,7 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         }
         return 0;
     case WM_QUERYENDSESSION:
+        if(controller_cover) return TRUE;
         if(!((DWORD)lp&ENDSESSION_LOGOFF_95) && enabled() && !FindWindowA("Welcome95.Screen",NULL) &&
            (resident_mode || !FindWindowA("Welcome95.Controller",NULL))) {
             if(!body_font) { bundled_fonts_load(instance); create_ui_fonts(); }
@@ -1171,7 +1218,9 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         return TRUE;
     case WM_ENDSESSION:
         if(wp && (!resident_mode || !power_requested || ((DWORD)lp&ENDSESSION_LOGOFF_95))) {
-            HANDLE event=CreateEventA(NULL,TRUE,FALSE,((DWORD)lp&ENDSESSION_LOGOFF_95) ? LOGOFF_EVENT : ENDED_EVENT);
+            HANDLE event;
+            if(resident_mode) show_controller_cover(hwnd);
+            event=CreateEventA(NULL,TRUE,FALSE,((DWORD)lp&ENDSESSION_LOGOFF_95) ? LOGOFF_EVENT : ENDED_EVENT);
             if(event) { SetEvent(event); CloseHandle(event); }
             if(resident_mode) return 0;
         }
@@ -1213,6 +1262,7 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         }
         return 0;
     case WM_DESTROY:
+        controller_cover=FALSE;
         if(resident_mode) UnregisterHotKey(hwnd,ID_RESCUE_HOTKEY);
         KillTimer(hwnd,TICK); PostQuitMessage(0); return 0;
     }

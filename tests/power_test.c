@@ -150,6 +150,12 @@ void power_test_entry(void)
     UpdateWindow(screen);
     UpdateWindow(GetDlgItem(screen,ID_POWER));
     check(power_pixels(),"the real welcome power button paints its red icon and blue background");
+    SetCursor(LoadCursor(NULL,IDC_WAIT)); SendMessageA(screen,WM_SETCURSOR,(WPARAM)screen,MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
+    check(GetCursor()==LoadCursor(NULL,IDC_ARROW),"the welcome client replaces a stale wait pointer with its stable arrow");
+    SetCursor(LoadCursor(NULL,IDC_WAIT));
+    SendDlgItemMessageA(screen,ID_POWER,WM_SETCURSOR,(WPARAM)GetDlgItem(screen,ID_POWER),MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
+    check(GetCursor()==LoadCursor(NULL,IDC_ARROW),"the native power button keeps the same arrow pointer before its click");
+
     dc=GetDC(GetDlgItem(screen,ID_POWER));
     PatBlt(dc,0,0,245,29,BLACKNESS); ReleaseDC(GetDlgItem(screen,ID_POWER),dc);
     InvalidateRect(screen,NULL,FALSE); UpdateWindow(screen);
@@ -174,8 +180,15 @@ void power_test_entry(void)
 
     fixture=CreateWindowExA(WS_EX_TOPMOST,"STATIC","White fixture",WS_POPUP|WS_VISIBLE|SS_WHITERECT,0,0,40,40,NULL,NULL,instance,NULL); UpdateWindow(fixture);
     SendDlgItemMessageA(screen,ID_POWER,BM_CLICK,0,0);
+    check(power_pending && !power_dialog_active(),"native power clicks finish before queued screenshot and dialog work begins");
+    pump(30);
     dialog=FindWindowA("Welcome95.PowerChoice",NULL); shade=FindWindowA("Welcome95.PowerShade",NULL);
     check(dialog && shade,"the welcome power button opens a separate choice and dimming layer");
+    SetCursor(LoadCursor(NULL,IDC_WAIT)); SendMessageA(shade,WM_SETCURSOR,(WPARAM)shade,MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
+    check(GetCursor()==LoadCursor(NULL,IDC_ARROW),"the dimming layer replaces a stale wait pointer with the normal arrow");
+    SetCursor(LoadCursor(NULL,IDC_WAIT)); SendMessageA(dialog,WM_SETCURSOR,(WPARAM)dialog,MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
+    check(GetCursor()==LoadCursor(NULL,IDC_ARROW),"the power dialog preserves the same pointer across activation");
+
     check(!IsWindowEnabled(screen) && !IsWindowEnabled(login_window),"choice temporarily disables welcome and native input");
     check(IsWindowEnabled(fixture),"unrelated windows are not disabled");
     GetWindowRect(dialog,&rect);
@@ -220,13 +233,13 @@ void power_test_entry(void)
     legacy_count=2;
     dc=GetDC(fixture); final=GetPixel(dc,10,10); ReleaseDC(fixture,dc);
     check(final==RGB(255,255,255),"Cancel leaves original desktop pixels unchanged");
-    SendMessageA(screen,WM_COMMAND,ID_POWER,0);
+    SendMessageA(screen,WM_COMMAND,ID_POWER,0); pump(30);
     SendMessageA(screen,WM_HOTKEY,1,0);
     check(!power_dialog_active() && IsWindow(screen),"the welcome's Escape hotkey cancels only the power dialog");
-    SendMessageA(screen,WM_COMMAND,ID_POWER,0); dialog=FindWindowA("Welcome95.PowerChoice",NULL);
+    SendMessageA(screen,WM_COMMAND,ID_POWER,0); pump(30); dialog=FindWindowA("Welcome95.PowerChoice",NULL);
     zero_memory(&message,sizeof(message)); message.hwnd=dialog; message.message=WM_KEYDOWN; message.wParam=VK_ESCAPE;
     check(power_dialog_translate(&message) && !power_dialog_active(),"Escape also cancels through the normal message translator");
-    SendMessageA(screen,WM_COMMAND,ID_POWER,0); dialog=FindWindowA("Welcome95.PowerChoice",NULL);
+    SendMessageA(screen,WM_COMMAND,ID_POWER,0); pump(30); dialog=FindWindowA("Welcome95.PowerChoice",NULL);
     SendMessageA(dialog,WM_COMMAND,POWER_OFF,0);
     check(!power_dialog_active() && !actions,"preview Turn Off closes the choice without dispatching power");
     host.instance=instance; host.owner=screen; host.native_input=login_window; host.russian=FALSE; host.preview=FALSE;
