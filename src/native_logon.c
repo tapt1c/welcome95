@@ -22,6 +22,7 @@ static struct {
     BOOL had_region;
     BOOL visible;
     BOOL attached;
+    BOOL probing;
     BOOL unsupported;
     int count, edits, passwords;
     BOOL layout_valid;
@@ -196,7 +197,7 @@ void native_logon_restore(BOOL reveal_original)
     int index;
     BOOL visible;
     DWORD_PTR result;
-    if (saved.attached && same_dialog()) {
+    if (saved.attached && !saved.probing && same_dialog()) {
         visible = reveal_original ? saved.visible : IsWindowVisible(saved.dialog);
         ShowWindow(saved.dialog, SW_HIDE);
         /* Remove our clipping before restoring geometry and original children. */
@@ -232,7 +233,7 @@ void native_logon_restore(BOOL reveal_original)
     saved.region = NULL;
     saved.region_probe = NULL;
     saved.dialog = NULL;
-    saved.attached = FALSE; saved.layout_valid = FALSE;
+    saved.attached = FALSE; saved.probing=FALSE; saved.layout_valid = FALSE;
 }
 
 static BOOL layout_matches(int x, int y, int width, int height)
@@ -263,7 +264,7 @@ BOOL native_logon_layout(int x, int y, int width)
     RECT rectangle, field, client, parent_client;
     POINT origin, field_origin;
     int dx, dy, index, gap, height, extra_width, extra_height;
-    if (!native_logon_attached() || width < 160) return FALSE;
+    if (!native_logon_attached() || saved.probing || width < 160) return FALSE;
     gap = 60;
     height = 22;
     if (layout_matches(x, y, width, height)) return TRUE;
@@ -316,7 +317,7 @@ BOOL native_logon_layout(int x, int y, int width)
 
 void native_logon_focus(void)
 {
-    if (!native_logon_attached() || !IsWindowEnabled(saved.dialog)) return;
+    if (!native_logon_attached() || saved.probing || !IsWindowEnabled(saved.dialog)) return;
     SetForegroundWindow(saved.dialog);
     /* The native thread sets focus itself; no cross-thread SetFocus/hook needed. */
     PostMessageA(saved.dialog, WM_NEXTDLGCTL, (WPARAM)saved.password, TRUE);
@@ -326,7 +327,7 @@ void native_logon_repaint(void)
 {
     /* Queue painting on the provider's thread; never synchronously send WM_PAINT
        across processes or reveal a form already hidden by Windows. */
-    if (native_logon_attached() && IsWindowVisible(saved.dialog))
+    if (native_logon_attached() && !saved.probing && IsWindowVisible(saved.dialog))
         InvalidateRect(saved.password, NULL, FALSE);
 }
 
@@ -356,24 +357,25 @@ BOOL native_logon_ready(void)
     return native_logon_attached() && IsWindowEnabled(saved.dialog) && IsWindowEnabled(saved.submit);
 }
 
-BOOL native_logon_try_empty(const char *name)
+BOOL native_logon_pristine(void)
 {
     DWORD_PTR modified;
-    if (!native_logon_ready()) return FALSE;
-    /* Metadata only: preserve input typed before we attached to a slow provider. */
-    if (!SendMessageTimeoutA(saved.password, EM_GETMODIFY, 0, 0,
-        SMTO_ABORTIFHUNG, 200, &modified) || modified) return FALSE;
+    return native_logon_attached() && SendMessageTimeoutA(saved.password,EM_GETMODIFY,0,0,
+        SMTO_ABORTIFHUNG,200,&modified) && !modified;
+}
+
+BOOL native_logon_try_empty(const char *name)
+{
+    if (!native_logon_ready() || !native_logon_pristine()) return FALSE;
     /* Clear rather than inspect input. Windows alone decides whether blank is valid. */
     if (!native_logon_set_user(name)) return FALSE;
     return PostMessageA(saved.dialog, WM_COMMAND,
         MAKEWPARAM(GetWindowLongA(saved.submit, GWL_ID), BN_CLICKED), (LPARAM)saved.submit);
 }
 
-BOOL native_logon_attach(HWND dialog, int x, int y, int width)
+static BOOL capture_logon(HWND dialog)
 {
-    int index;
     DWORD_PTR result;
-    HRGN hidden;
     native_logon_restore(FALSE);
     saved.dialog = dialog;
     saved.count = 0; saved.edits = 0; saved.passwords = 0;
@@ -399,7 +401,22 @@ BOOL native_logon_attach(HWND dialog, int x, int y, int width)
     saved.region_probe = CreateRectRgn(0, 0, 0, 0);
     if (!saved.region_probe) { native_logon_restore(FALSE); return FALSE; }
     saved.had_region = GetWindowRgn(dialog, saved.region) != ERROR;
-    saved.attached = TRUE;
+    saved.attached = TRUE; saved.probing=TRUE;
+    return TRUE;
+}
+
+BOOL native_logon_probe(HWND dialog)
+{
+    if(!capture_logon(dialog)) return FALSE;
+    if(native_logon_pristine()) return TRUE;
+    native_logon_restore(FALSE); return FALSE;
+}
+
+BOOL native_logon_attach(HWND dialog, int x, int y, int width)
+{
+    int index; DWORD_PTR result; HRGN hidden;
+    if(!capture_logon(dialog)) return FALSE;
+    saved.probing=FALSE;
     hidden=CreateRectRgn(0,0,0,0);
     if(!hidden || !SetWindowRgn(dialog,hidden,TRUE)) {
         if(hidden) DeleteObject(hidden);

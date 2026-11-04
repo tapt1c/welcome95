@@ -206,3 +206,15 @@ as single-line text; long explanatory panels may wrap.
 For larger native password glyphs, WM_SETFONT(NULL) selects the provider's own
 system font. Preserve/restore its original WM_GETFONT value; do not pass a custom
 font owned by another process or resize the 167x22 client for a font change.
+
+
+## Quiet startup before single-account authentication
+
+Keep VIEW_STARTING separate from authenticated Welcome states. A quiet native
+probe may snapshot/classify roles but must not embed, resize, restyle, focus or
+change the font/visibility of native children. Reject modified input by metadata.
+Preserve one-attempt eligibility: disabled OK, notice, replacement form or bounded
+timeout returns manual input without retrying, dismissing native errors or
+clearing subsequent input. Posted OK is not session readiness. Keep the real OS
+ready event and post-DestroyWindow close acknowledgement. /preview-starting is
+inert. Test probing-to-manual reattachment, including shutdown cancellation.

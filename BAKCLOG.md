@@ -381,3 +381,36 @@ other UI fonts retain their previous geometry. The existing Russian-width test
 now measures the actual caption font. Validation: 387 checks per resolution in
 the three standard Wine modes and both production PE audits; Win95 rendering
 still requires visual confirmation on the user's display.
+
+
+## XP-style startup, smaller greeting and compact settings (current)
+
+The user requested a smaller Russian greeting, no chooser for one passwordless
+account, and denser settings; then chose the existing status-screen composition
+for the pending phase. VIEW_STARTING now shows Windows95 artwork 40px right of
+center (latest user annotation) and truthful “Запуск Windows...” / “Windows is starting up...” text with the XP bars
+and glow. No invented RPCSS/service stage is displayed. The separate confirmed
+Welcome still follows only the real OS readiness signal. Native validation owns
+the single empty attempt; no passwords/PWL contents are read or stored.
+
+A quiet probe leaves native controls/geometry/font untouched behind the canvas.
+Disabled OK, modified input, errors, provider replacement or a four-second bound
+return to manual login, consuming the automatic attempt. Errors stay accessible
+and typed manual input survives. Shutdown cancellation also reattaches normally.
+Existing session service, rescue, minimum greeting delay and shell close gate
+remain in place. Russian greeting is 32pt (was 36); English reference remains 36.
+Settings are 410×234 (was 500×315), Tahoma 11px, 10px margins and 24px buttons, with
+separate actions and four previews including startup. Both UI languages remain.
+
+Validation: 407 checks per resolution under Wine64/Xvfb at 640×480×16, 800×600×24
+and 1024×768×24, including 54 native, 45 layout, 51 session and 16 Russian UI checks.
+The tests use synthetic credentials/events and inert power/boot fixtures. New
+actual English Wine screenshots are in docs/previews (ACP1252; no WM decorations).
+Production main and embedded bootstrap are rebuilt/audited. After the final
+40px logo move, the 7 rendering and 16 Russian UI checks were repeated at VGA
+and the updated startup screenshot was inspected.
+
+- [ ] Repeat passwordless/protected single-account boot and logoff on real Win95.
+- [ ] Confirm manual recovery with slow/error/replaced native providers on Win95.
+- [ ] Visually compare Russian 32pt greeting/status screen and compact settings
+      using the VM's actual DPI, GDI driver and fonts.

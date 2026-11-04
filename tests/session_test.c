@@ -329,6 +329,33 @@ void session_test_entry(void)
     check(native_logon_attached() && login_window==provider,
         "the repeated login attaches real controls owned by a separate synthetic provider process");
     {
+        RECT original,after; LONG style; DWORD_PTR modified=0;
+        native_logon_restore(FALSE); GetWindowRect(provider,&original); style=GetWindowLongA(provider,GWL_STYLE);
+        profiles_remember("First"); pending_profile=FALSE; automatic_attempted=FALSE;
+        single_submitted=FALSE; single_started=GetTickCount();
+        SendMessageA(GetDlgItem(provider,23),EM_SETMODIFY,FALSE,0);
+        check(native_logon_probe(provider),"a separate provider supports the quiet single-user probe");
+        set_status_view(screen,VIEW_STARTING); try_single_account_logon(); pump(60); maintain_topmost(screen);
+        GetWindowRect(provider,&after);
+        check(single_submitted && status_view==VIEW_STARTING && !finishing &&
+            !IsWindowVisible(GetDlgItem(screen,ID_SUBMIT)) && EqualRect(&original,&after) &&
+            (GetWindowLongA(provider,GWL_STYLE)&WS_CAPTION)==(style&WS_CAPTION) && window_above(screen,provider),
+            "one-account startup shows only startup status while the untouched real provider stays behind it");
+        check(WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+            "a posted blank attempt never authenticates or releases shell startup by itself");
+        single_started=GetTickCount()-4001; service_single_pending();
+        check(status_view==VIEW_LOGIN && automatic_attempted && IsWindowVisible(GetDlgItem(screen,ID_POWER)),
+            "an unconfirmed quiet attempt returns to manual login without retrying or hiding recovery controls");
+        SendMessageTimeoutA(GetDlgItem(provider,23),EM_GETMODIFY,0,0,SMTO_ABORTIFHUNG,200,&modified);
+        allow_logon();
+        check(native_logon_attached() && login_window==provider,"manual fallback embeds the same real provider normally");
+        native_logon_restore(FALSE); native_logon_probe(provider);
+        set_status_view(screen,VIEW_STARTING); set_status_view(screen,VIEW_SHUTDOWN); set_status_view(screen,VIEW_LOGIN);
+        allow_logon();
+        check(native_logon_attached() && native_logon_layout(card_x(501),row_y(profile_top(selected_profile)+52),227),
+            "cancelled shutdown during a quiet probe still embeds a real manual password field");
+    }
+    {
         HWND field=GetDlgItem(provider,23); POINT hit; RECT rectangle; DWORD_PTR reply=0;
         check(SendMessageTimeoutA(provider,WM_USER+43,0,0,SMTO_ABORTIFHUNG,200,&reply) && reply>=16 && reply<=22,
             "the provider can render the shared larger font within the original 22px client height");

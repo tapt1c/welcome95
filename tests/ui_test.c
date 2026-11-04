@@ -31,10 +31,13 @@ static BOOL fits(HFONT font,const char *text,int width,int height,BOOL wrap)
 }
 static BOOL controls_fit(HWND window)
 {
-    HWND child=GetWindow(window,GW_CHILD); char text[1024],name[24]; RECT area;
+    HWND child=GetWindow(window,GW_CHILD); char text[1024],name[24]; RECT area,parent,position;
+    GetClientRect(window,&parent);
     while(child) {
         int available_width,available_height;
         GetWindowTextA(child,text,sizeof(text)); GetClientRect(child,&area);
+        GetWindowRect(child,&position); MapWindowPoints(NULL,window,(POINT *)&position,2);
+        if(position.left<0 || position.top<0 || position.right>parent.right || position.bottom>parent.bottom) return FALSE;
         GetClassNameA(child,name,sizeof(name));
         available_width=area.right-8; available_height=area.bottom;
         if(!lstrcmpiA(name,"BUTTON") && (GetWindowLongA(child,GWL_STYLE)&0x0f)==BS_OWNERDRAW) {
@@ -59,14 +62,15 @@ void ui_test_entry(void)
     check(russian_ui(),"the Russian UI test selects CP1251 translations independently of Wine's locale");
     zero_memory(&cls,sizeof(cls)); cls.hInstance=instance; cls.lpfnWndProc=settings_proc; cls.lpszClassName="Welcome95.UiSettings";
     RegisterClassA(&cls);
-    settings=CreateWindowA(cls.lpszClassName,"Settings fixture",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,0,0,500,315,NULL,NULL,instance,NULL);
+    settings=CreateWindowA(cls.lpszClassName,"Settings fixture",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,0,0,SETTINGS_WIDTH,SETTINGS_HEIGHT,NULL,NULL,instance,NULL);
     check(same_text(GetDlgItem(settings,ID_ENABLE),"\302\352\353\376\367\350\362\374") && same_text(GetDlgItem(settings,ID_DISABLE),"\316\362\352\353\376\367\350\362\374"),
         "startup action buttons are fully Russian");
     check(same_text(GetDlgItem(settings,ID_PREVIEW),"\317\360\356\361\354\356\362\360") && same_text(GetDlgItem(settings,ID_EXIT),"\307\340\352\360\373\362\374"),
         "preview and close buttons are fully Russian");
-    check(same_text(GetDlgItem(settings,ID_PREVIEW_SINGLE),"\317\360\350\342\345\362\361\362\342\350\345 (1)") &&
-        same_text(GetDlgItem(settings,ID_PREVIEW_MULTI),"\317\360\350\342\345\362\361\362\342\350\345 (2+)") && same_text(GetDlgItem(settings,ID_PREVIEW_SHUTDOWN),"\302\373\352\353\376\367\345\355\350\345"),
+    check(same_text(GetDlgItem(settings,ID_PREVIEW_SINGLE),"\316\344\350\355 \340\352\352\340\363\355\362") &&
+        same_text(GetDlgItem(settings,ID_PREVIEW_MULTI),"\315\345\361\352\356\353\374\352\356") && same_text(GetDlgItem(settings,ID_PREVIEW_SHUTDOWN),"\302\373\352\353\376\367\345\355\350\345"),
         "all status preview buttons are fully Russian");
+    check(same_text(GetDlgItem(settings,ID_PREVIEW_STARTING),"\307\340\357\363\361\352"),"the startup preview button is Russian");
     check(same_text(GetDlgItem(settings,200),"\321\356\361\362\356\377\355\350\345: \356\362\352\353\376\367\345\355\356 \344\353\377 \375\362\356\351 \352\356\357\350\350 \357\360\356\343\360\340\354\354\373"),"startup status is fully Russian");
     check(controls_fit(settings),"Russian settings text fits the original controls and information panel");
     DestroyWindow(settings);
@@ -82,6 +86,10 @@ void ui_test_entry(void)
         "both Russian sign-in prompts fit the compact single-line area");
     check(fits(small_font,"\317\356\361\353\345 \342\365\356\344\340 \354\356\346\355\356 \350\347\354\345\355\350\362\374 \355\340\361\362\360\356\351\352\350.\n\316\362\352\360\356\351\362\345 Welcome95 \344\353\377 \355\340\361\362\360\356\351\352\350 \375\352\360\340\355\340.",305,43,TRUE),
         "the Russian footer fits without extending into the password or screen edge");
+    set_status_view(screen,VIEW_STARTING); single_started=GetTickCount()-4001; service_single_pending();
+    check(status_view==VIEW_STARTING && !IsWindowVisible(GetDlgItem(screen,ID_SUBMIT)) && fits(message_font,"\307\340\357\363\361\352 Windows...",640,51,FALSE),
+        "startup preview stays inert and its Russian status fits the reference layout");
+    set_status_view(screen,VIEW_LOGIN);
     show_power_dialog(screen); dialog=FindWindowA("Welcome95.PowerChoice",NULL);
     check(dialog && same_text(dialog,"\302\373\352\353\376\367\350\362\374 \352\356\354\357\374\376\362\345\360") && same_text(GetDlgItem(dialog,IDCANCEL),"\316\362\354\345\355\340"),
         "the power dialog title and Cancel are Russian");

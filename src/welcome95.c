@@ -34,17 +34,21 @@
 #define ID_PREVIEW_SINGLE 111
 #define ID_PREVIEW_MULTI 112
 #define ID_PREVIEW_SHUTDOWN 113
+#define ID_PREVIEW_STARTING 115
 #define ID_PROFILE_SCROLL 114
 #define ID_RESCUE_HOTKEY 3
 #define VIEW_LOGIN 0
 #define VIEW_WELCOME_SINGLE 1
 #define VIEW_WELCOME_MULTI 2
 #define VIEW_SHUTDOWN 3
+#define VIEW_STARTING 4
+#define SETTINGS_WIDTH 410
+#define SETTINGS_HEIGHT 234
 #define TICK 1
 
 static HINSTANCE instance;
 static HWND screen;
-static HFONT title_font, body_font, small_font, welcome_font, status_font, power_caption_font;
+static HFONT title_font, body_font, small_font, welcome_font, status_font, power_caption_font, settings_font, settings_title_font, message_font;
 static int status_view;
 static BOOL monitor_active, preview_status;
 static DWORD preview_started, monitor_started;
@@ -68,9 +72,12 @@ static BOOL login_was_topmost;
 static BOOL prefer_native;
 static int selected_profile, profile_page;
 static BOOL pending_profile, servicing_logon, automatic_attempted, compact_selected;
+static BOOL single_submitted;
+static DWORD single_started;
 static DWORD next_logon_attempt, next_profile_attempt;
 static BOOL escape_hotkey, close_hotkey;
 static char exe_path[MAX_PATH];
+static BOOL sign_in_view(void) { return status_view==VIEW_LOGIN || status_view==VIEW_STARTING; }
 
 /* Artwork/control dimensions stay in pixels; only their anchors move. */
 static int cx(int value) { return value + (GetSystemMetrics(SM_CXSCREEN)-800)/2; }
@@ -336,7 +343,7 @@ static int font_pixels(int points)
 }
 static void create_ui_fonts(void)
 {
-    welcome_font = CreateFontA(-font_pixels(36), 0, 0, 0, FW_BOLD, TRUE, FALSE, FALSE, DEFAULT_CHARSET,
+    welcome_font = CreateFontA(-font_pixels(ui_russian() ? 32 : 36), 0, 0, 0, FW_BOLD, TRUE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Arial");
     title_font = CreateFontA(-font_pixels(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
@@ -348,6 +355,12 @@ static void create_ui_fonts(void)
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
     status_font = CreateFontA(-font_pixels(8), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Tahoma");
+    settings_font = CreateFontA(-11,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Tahoma");
+    settings_title_font = CreateFontA(-13,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Tahoma");
+    message_font = CreateFontA(-18,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Arial");
 }
 static BOOL russian_ui(void)
 {
@@ -386,7 +399,7 @@ static void set_status_view(HWND hwnd, int view)
     static const int controls[] = { ID_NATIVE, ID_SUBMIT, ID_POWER, ID_PREV, ID_NEXT, ID_PROFILE_SCROLL, ID_DONE, 201 };
     unsigned int index;
     status_view = view;
-    login_hotkeys(hwnd,view==VIEW_LOGIN);
+    login_hotkeys(hwnd,sign_in_view());
     /* Cover the native field during shutdown without changing its visibility. */
     if(view==VIEW_SHUTDOWN && native_logon_attached())
         SetWindowPos(login_window,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
@@ -461,7 +474,8 @@ static void paint_welcome(HWND hwnd)
     if(frame) { old=SelectObject(memory,frame); dc=memory; }
     else if(memory) DeleteDC(memory);
     fill(dc, area, RGB(90,126,220));
-    if(!compact_layout()) bitmap(dc, 100, 0, 78, 219, 207);
+    if(!compact_layout() || status_view==VIEW_STARTING || status_view==VIEW_SHUTDOWN)
+        bitmap(dc,100,0,78,219,207);
     SetRect(&rectangle, 0, 0, area.right, 78);
     fill(dc, rectangle, RGB(0,48,156));
     for (band = 0; band < 128; ++band) {
@@ -469,7 +483,8 @@ static void paint_welcome(HWND hwnd)
         fill(dc, rectangle, RGB(57-band*57/127,52-band*4/127,173-band*17/127));
     }
     bitmap(dc, 125, 0, 78, area.right, 2);
-    if (status_view != VIEW_WELCOME_SINGLE && !compact_layout()) bitmap(dc, 126, 0, by(504), area.right, 3);
+    if(status_view==VIEW_STARTING || status_view==VIEW_SHUTDOWN ||
+        (status_view!=VIEW_WELCOME_SINGLE && !compact_layout())) bitmap(dc,126,0,by(504),area.right,3);
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255,255,255));
     if (status_view == VIEW_WELCOME_SINGLE) {
         paint_greeting(dc, 100, 800); finish_paint(hwnd,&paint,dc,frame,old); return;
@@ -488,10 +503,16 @@ static void paint_welcome(HWND hwnd)
         label(dc, status_font, russian_ui() ? "\307\340\343\360\363\347\352\340\040\353\350\367\355\373\365\040\357\340\360\340\354\345\362\360\356\342\056\056\056" : "Loading your personal settings...", rectangle, DT_LEFT | DT_WORDBREAK);
         finish_paint(hwnd,&paint,dc,frame,old); return;
     }
+    if(status_view==VIEW_STARTING) {
+        paint_logo_at(dc,cx(372),cy(232));
+        SetRect(&rectangle,cx(80),cy(338),cx(720),cy(389));
+        label(dc,message_font,ui_text("\307\340\357\363\361\352 Windows...","Windows is starting up..."),rectangle,DT_CENTER|DT_SINGLELINE);
+        finish_paint(hwnd,&paint,dc,frame,old); return;
+    }
     if (status_view == VIEW_SHUTDOWN) {
         paint_logo_at(dc,cx(332),cy(232));
         SetRect(&rectangle, cx(80), cy(338), cx(720), cy(389));
-        label(dc, body_font, ending_unknown ? (russian_ui() ? "\317\356\344\356\346\344\350\362\345..." : "Please wait...") : russian_ui() ? "\307\340\342\345\360\370\345\355\350\345\040\360\340\341\356\362\373\040\127\151\156\144\157\167\163\056\056\056" : "Windows is shutting down...", rectangle, DT_CENTER | DT_SINGLELINE);
+        label(dc, message_font, ending_unknown ? (russian_ui() ? "\317\356\344\356\346\344\350\362\345..." : "Please wait...") : russian_ui() ? "\307\340\342\345\360\370\345\355\350\345\040\360\340\341\356\362\373\040\127\151\156\144\157\167\163\056\056\056" : "Windows is shutting down...", rectangle, DT_CENTER | DT_SINGLELINE);
         finish_paint(hwnd,&paint,dc,frame,old); return;
     }
     bitmap(dc,124,compact_layout() ? compact_x(128) : cx(398),compact_layout() ? compact_y(208) : 96,1,compact_layout() ? 170 : by(486)-96);
@@ -580,14 +601,25 @@ static void release_logon(void)
 }
 
 /* One blank-password attempt, authenticated by Windows, never a retry loop. */
+static void manual_single_login(void)
+{
+    automatic_attempted=TRUE; single_submitted=FALSE; pending_profile=FALSE;
+    release_logon(); next_logon_attempt=0;
+    if(screen) set_status_view(screen,VIEW_LOGIN);
+}
 static void try_single_account_logon(void)
 {
+    BOOL posted;
     if (automatic_attempted || preview || finishing || prefer_native || pending_profile ||
-        status_view != VIEW_LOGIN || profiles_count()!=1 || !native_logon_attached()) return;
+        !sign_in_view() || profiles_count()!=1 || !native_logon_attached()) return;
     automatic_attempted=TRUE;
     /* A provider that requires input before enabling OK stays manual. Waiting
        until it enables OK could erase a password the user has begun typing. */
-    if(native_logon_ready()) native_logon_try_empty(profiles_name(0));
+    posted=native_logon_ready() && native_logon_try_empty(profiles_name(0));
+    if(status_view==VIEW_STARTING) {
+        if(posted) { single_submitted=TRUE; single_started=GetTickCount(); }
+        else manual_single_login();
+    }
 }
 
 static void allow_logon(void)
@@ -595,16 +627,19 @@ static void allow_logon(void)
     HWND found = NULL;
     RECT area;
     int x, y, width;
-    if (preview || finishing || status_view != VIEW_LOGIN || !account_open()) return;
+    BOOL quiet=status_view==VIEW_STARTING;
+    if (preview || finishing || !sign_in_view() || !account_open()) return;
     if (login_window && IsWindow(login_window) && IsWindowVisible(login_window)) {
         if (native_logon_attached()) {
-            login_geometry(&x, &y, &width);
-            native_logon_layout(x, y, width);
-            return;
+            if(quiet) return;
+            login_geometry(&x,&y,&width);
+            if(native_logon_layout(x,y,width)) return;
+            release_logon(); next_logon_attempt=0;
         }
         if (prefer_native) return;
         /* Retry while the provider is still initializing its controls. */
     }
+    if(quiet && single_submitted) return;
     if ((LONG)(GetTickCount() - next_logon_attempt) < 0) return;
     next_logon_attempt = GetTickCount() + 1000;
     release_logon();
@@ -614,7 +649,7 @@ static void allow_logon(void)
     GetWindowThreadProcessId(found,&provider_process);
     login_was_topmost = (GetWindowLongA(found, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
     login_geometry(&x, &y, &width);
-    if (!prefer_native && native_logon_attach(found, x, y, width)) {
+    if (!prefer_native && (quiet ? native_logon_probe(found) : native_logon_attach(found, x, y, width))) {
         compact_selected=TRUE;
         if (!native_logon_user_empty()) profiles_accept_native(native_logon_name());
         if (native_logon_user_empty() && !profiles_count()) {
@@ -631,6 +666,11 @@ static void allow_logon(void)
             }
             profile_page = selected_profile / page_size();
         }
+        if(quiet) {
+            if(profiles_count()!=1) { manual_single_login(); return; }
+            SetWindowPos(found,screen,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER);
+            SetForegroundWindow(screen); return;
+        }
         position_profile_navigation(screen);
         login_geometry(&x, &y, &width); native_logon_layout(x, y, width);
         position_arrow(screen);
@@ -638,6 +678,7 @@ static void allow_logon(void)
         InvalidateRect(screen, NULL, FALSE);
         return;
     }
+    if(quiet) { manual_single_login(); return; }
     /* An unknown provider must keep its required controls accessible. */
     GetWindowRect(found, &area);
     x = GetSystemMetrics(SM_CXSCREEN) * 3 / 4 - (area.right - area.left) / 2;
@@ -670,6 +711,15 @@ static HWND provider_notice(HWND input)
     popup=NULL; if(provider_process) EnumWindows(find_provider_notice,(LPARAM)&popup);
     return popup;
 }
+static void service_single_pending(void)
+{
+    HWND found=NULL;
+    if(preview || status_view!=VIEW_STARTING) return;
+    if(single_submitted && login_window && (!IsWindow(login_window) || !IsWindowVisible(login_window)))
+        EnumWindows(find_logon,(LPARAM)&found);
+    if(profiles_count()!=1 || provider_notice(login_window) || found ||
+        (DWORD)(GetTickCount()-single_started)>=4000) manual_single_login();
+}
 static BOOL window_above(HWND first,HWND second)
 {
     HWND window=GetTopWindow(NULL);
@@ -691,7 +741,7 @@ static void maintain_topmost(HWND hwnd)
        (native_logon_attached() || prefer_native)) {
         input=login_window;
     }
-    if(status_view==VIEW_LOGIN) popup=provider_notice(input);
+    if(sign_in_view()) popup=provider_notice(input);
     correct=(GetWindowLongA(hwnd,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0;
     if(input && (!(GetWindowLongA(input,GWL_EXSTYLE)&WS_EX_TOPMOST) || !window_above(input,hwnd))) correct=FALSE;
     if(popup && (!(GetWindowLongA(popup,GWL_EXSTYLE)&WS_EX_TOPMOST) || !window_above(popup,input))) correct=FALSE;
@@ -727,7 +777,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     case WM_CREATE:
         if (preview_status) preview_started = GetTickCount();
         SetTimer(hwnd, TICK, 100, NULL);
-        if(status_view==VIEW_LOGIN) login_hotkeys(hwnd,TRUE);
+        if(sign_in_view()) login_hotkeys(hwnd,TRUE);
         CreateWindowA("BUTTON", ui_text("\315\345 \363\344\340\270\362\361\377 \342\356\351\362\350?","Trouble signing in?"), WS_CHILD | BS_PUSHBUTTON,
             rx(625), by(572), 150, 23, hwnd, (HMENU)ID_NATIVE, instance, NULL);
         SendDlgItemMessageA(hwnd, ID_NATIVE, WM_SETFONT, (WPARAM)small_font, TRUE);
@@ -860,7 +910,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             DestroyWindow(hwnd); return 0;
         }
         if(power_dialog_active()) return 0;
-        if (status_view == VIEW_LOGIN && !finishing && ready_event && WaitForSingleObject(ready_event, 0) == WAIT_OBJECT_0) {
+        if (sign_in_view() && !finishing && ready_event && WaitForSingleObject(ready_event, 0) == WAIT_OBJECT_0) {
             finishing = TRUE; finish_time = GetTickCount(); set_status_view(hwnd, profiles_count()>1 ? VIEW_WELCOME_MULTI : VIEW_WELCOME_SINGLE);
         }
         if (finishing && (DWORD)(GetTickCount() - finish_time) >= 1000) {
@@ -869,7 +919,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             return 0;
         }
         if (preview_status && (DWORD)(GetTickCount()-preview_started) >= 5000) { DestroyWindow(hwnd); return 0; }
-        if (status_view != VIEW_LOGIN) { maintain_topmost(hwnd); return 0; }
+        if (!sign_in_view()) { maintain_topmost(hwnd); return 0; }
         if (rescue_mode || servicing_logon) return 0;
         servicing_logon = TRUE;
         allow_logon();
@@ -877,15 +927,19 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             next_profile_attempt = GetTickCount() + 1000;
             index = selected_profile;
             lstrcpynA(requested_name, profiles_name(index), sizeof(requested_name));
-            if (native_logon_set_user(requested_name) && selected_profile == index) {
+            if(status_view==VIEW_STARTING && !native_logon_pristine()) manual_single_login();
+            else if (native_logon_set_user(requested_name) && selected_profile == index) {
                 pending_profile = FALSE;
                 login_geometry(&x, &y, &width);
-                native_logon_layout(x, y, width);
-                EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), TRUE);
+                if(status_view==VIEW_LOGIN) {
+                    native_logon_layout(x, y, width);
+                    EnableWindow(GetDlgItem(hwnd, ID_SUBMIT), TRUE);
+                }
                 InvalidateRect(hwnd, NULL, FALSE);
             }
         }
         try_single_account_logon();
+        service_single_pending();
         maintain_topmost(hwnd);
         servicing_logon = FALSE;
         return 0;
@@ -937,6 +991,8 @@ static void begin_logon_cycle(BOOL reset)
     automatic_attempted=FALSE; compact_selected=FALSE; selected_profile=profile_page=0;
     next_logon_attempt=next_profile_attempt=0; status_view=VIEW_LOGIN;
     profiles_load();
+    single_submitted=FALSE; single_started=GetTickCount();
+    if(!preview && profiles_count()==1) status_view=VIEW_STARTING;
     if(!body_font) { bundled_fonts_load(instance); create_ui_fonts(); }
     screen=CreateWindowExA(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,"Welcome95.Screen",APP,
         WS_POPUP|WS_VISIBLE|WS_CLIPCHILDREN,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
@@ -1065,8 +1121,8 @@ static void update_settings(HWND hwnd)
 static void button(HWND hwnd, const char *text, int id, int x, int y, int width)
 {
     HWND child = CreateWindowA("BUTTON", text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                              x, y, width, 30, hwnd, (HMENU)(UINT_PTR)id, instance, NULL);
-    SendMessageA(child, WM_SETFONT, (WPARAM)small_font, TRUE);
+                              x, y, width, 24, hwnd, (HMENU)(UINT_PTR)id, instance, NULL);
+    SendMessageA(child, WM_SETFONT, (WPARAM)settings_font, TRUE);
 }
 
 static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp)
@@ -1077,19 +1133,25 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
     char command[MAX_PATH + 40];
     switch (message) {
     case WM_CREATE:
-        child = CreateWindowA("STATIC", ui_text("Welcome95\r\n\335\352\360\340\355 \357\360\350\342\345\362\361\362\342\350\377 \342 \361\362\350\353\345 Windows XP \344\353\377 Windows 95.\r\n\r\n\253\302\352\353\376\367\350\362\374\273 \227 \347\340\357\363\361\352 \356\341\356\353\356\367\352\350 \357\356\361\353\345 \357\360\350\342\345\362\361\362\342\350\377.\r\n\253\316\362\352\353\376\367\350\362\374\273 \227 \342\356\361\361\362\340\355\356\342\353\345\355\350\345 \357\360\345\346\355\345\351 \356\341\356\353\356\367\352\350.\r\n\317\340\360\356\353\374 \357\360\356\342\345\360\377\345\362\361\377 \361\360\345\344\361\362\342\340\354\350 Windows.\r\n\325\360\340\355\350\362\345 EXE \342 \357\356\361\362\356\377\355\355\356\351 \353\356\352\340\353\374\355\356\351 \357\340\357\352\345.","Welcome95\r\nWindows XP-inspired welcome for Windows 95.\r\n\r\nEnable delays your saved shell until welcome closes.\r\nDisable restores your previous shell.\r\nWindows keeps its own password verification.\r\nKeep this EXE in a permanent local folder."),
-            WS_CHILD | WS_VISIBLE, 20, 20, 460, 115, hwnd, NULL, instance, NULL);
-        SendMessageA(child, WM_SETFONT, (WPARAM)small_font, TRUE);
-        child = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE, 20, 145, 460, 25,
-                              hwnd, (HMENU)200, instance, NULL);
-        SendMessageA(child, WM_SETFONT, (WPARAM)small_font, TRUE);
-        button(hwnd, ui_text("\302\352\353\376\367\350\362\374","Enable"), ID_ENABLE, 20, 185, 100);
-        button(hwnd, ui_text("\316\362\352\353\376\367\350\362\374","Disable"), ID_DISABLE, 130, 185, 100);
-        button(hwnd, ui_text("\317\360\356\361\354\356\362\360","Preview"), ID_PREVIEW, 240, 185, 100);
-        button(hwnd, ui_text("\307\340\352\360\373\362\374","Close"), ID_EXIT, 350, 185, 100);
-        button(hwnd, ui_text("\317\360\350\342\345\362\361\362\342\350\345 (1)","Welcome (one)"), ID_PREVIEW_SINGLE, 20, 225, 140);
-        button(hwnd, ui_text("\317\360\350\342\345\362\361\362\342\350\345 (2+)","Welcome (many)"), ID_PREVIEW_MULTI, 170, 225, 140);
-        button(hwnd, ui_text("\302\373\352\353\376\367\345\355\350\345","Shutdown preview"), ID_PREVIEW_SHUTDOWN, 320, 225, 140);
+        child=CreateWindowA("STATIC","Welcome95",WS_CHILD|WS_VISIBLE,10,8,384,18,hwnd,NULL,instance,NULL);
+        SendMessageA(child,WM_SETFONT,(WPARAM)settings_title_font,TRUE);
+        child=CreateWindowA("STATIC",ui_text("\317\360\350\342\345\362\361\362\342\350\345 \342 \361\362\350\353\345 Windows XP \344\353\377 Windows 95.\r\n\316\341\356\353\356\367\352\340 \347\340\357\363\361\352\340\345\362\361\377 \357\356\361\353\345 \357\360\350\342\345\362\361\362\342\350\377.\r\n\317\360\356\342\345\360\352\363 \357\340\360\356\353\377 \342\373\357\356\353\355\377\345\362 Windows.","Windows XP welcome screen for Windows 95.\r\nYour shell starts after welcome closes.\r\nWindows verifies your password."),
+            WS_CHILD|WS_VISIBLE,10,30,384,42,hwnd,NULL,instance,NULL);
+        SendMessageA(child,WM_SETFONT,(WPARAM)settings_font,TRUE);
+        child=CreateWindowA("STATIC","",WS_CHILD|WS_VISIBLE,10,78,384,16,hwnd,(HMENU)200,instance,NULL);
+        SendMessageA(child,WM_SETFONT,(WPARAM)settings_font,TRUE);
+        button(hwnd,ui_text("\302\352\353\376\367\350\362\374","Enable"),ID_ENABLE,10,101,90);
+        button(hwnd,ui_text("\316\362\352\353\376\367\350\362\374","Disable"),ID_DISABLE,108,101,90);
+        button(hwnd,ui_text("\317\360\356\361\354\356\362\360","Preview"),ID_PREVIEW,206,101,90);
+        button(hwnd,ui_text("\307\340\352\360\373\362\374","Close"),ID_EXIT,304,101,90);
+        child=CreateWindowA("STATIC",ui_text("\317\360\356\361\354\356\362\360 \375\352\360\340\355\356\342:","Preview screens:"),WS_CHILD|WS_VISIBLE,10,133,384,14,hwnd,NULL,instance,NULL);
+        SendMessageA(child,WM_SETFONT,(WPARAM)settings_font,TRUE);
+        button(hwnd,ui_text("\307\340\357\363\361\352","Starting"),ID_PREVIEW_STARTING,10,152,90);
+        button(hwnd,ui_text("\316\344\350\355 \340\352\352\340\363\355\362","One user"),ID_PREVIEW_SINGLE,108,152,90);
+        button(hwnd,ui_text("\315\345\361\352\356\353\374\352\356","Many users"),ID_PREVIEW_MULTI,206,152,90);
+        button(hwnd,ui_text("\302\373\352\353\376\367\345\355\350\345","Shutdown"),ID_PREVIEW_SHUTDOWN,304,152,90);
+        child=CreateWindowA("STATIC",ui_text("\315\345 \357\345\360\345\354\345\371\340\351\362\345 \363\361\362\340\355\356\342\353\345\355\355\373\351 EXE.","Keep the installed EXE at its current path."),WS_CHILD|WS_VISIBLE,10,184,384,14,hwnd,NULL,instance,NULL);
+        SendMessageA(child,WM_SETFONT,(WPARAM)settings_font,TRUE);
         update_settings(hwnd); return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) {
@@ -1097,13 +1159,15 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM
             if (configure(hwnd, TRUE)) MessageBoxA(hwnd, ui_text("\302\352\353\376\367\345\355\356. \321\356\347\344\340\355\340 \360\345\347\345\360\342\355\340\377 \352\356\357\350\377 \357\360\345\346\355\345\351 \356\341\356\353\356\367\352\350.\r\n\317\345\360\345\347\340\343\360\363\347\350\362\345 Windows \344\353\377 \357\360\356\342\345\360\352\350 \340\342\362\356\347\340\357\363\361\352\340.\r\n\315\345 \357\345\360\345\354\345\371\340\351\362\345 \363\361\362\340\355\356\342\353\345\355\355\373\351 EXE.","Enabled. The previous shell has been backed up.\r\nRestart Windows to test startup.\r\nKeep this executable at its current path."), APP, MB_OK | MB_ICONINFORMATION);
             update_settings(hwnd); break;
         case ID_DISABLE: configure(hwnd, FALSE); update_settings(hwnd); break;
+        case ID_PREVIEW_STARTING:
         case ID_PREVIEW_SINGLE:
         case ID_PREVIEW_MULTI:
         case ID_PREVIEW_SHUTDOWN:
         case ID_PREVIEW:
             zero_memory(&startup, sizeof(startup)); startup.cb = sizeof(startup);
             zero_memory(&process, sizeof(process));
-            command_line(command, LOWORD(wp) == ID_PREVIEW_SINGLE ? "/preview-single" :
+            command_line(command, LOWORD(wp)==ID_PREVIEW_STARTING ? "/preview-starting" :
+                LOWORD(wp) == ID_PREVIEW_SINGLE ? "/preview-single" :
                 LOWORD(wp) == ID_PREVIEW_MULTI ? "/preview-multi" :
                 LOWORD(wp) == ID_PREVIEW_SHUTDOWN ? "/preview-shutdown" : "/preview");
             if (!CreateProcessA(exe_path, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process))
@@ -1123,9 +1187,11 @@ static void release_ui_fonts(void)
 {
     DeleteObject(status_font); DeleteObject(welcome_font); DeleteObject(title_font);
     DeleteObject(body_font); DeleteObject(small_font); DeleteObject(power_caption_font);
+    DeleteObject(settings_font); DeleteObject(settings_title_font); DeleteObject(message_font);
     bundled_fonts_release();
     power_operations_release();
     status_font=welcome_font=title_font=body_font=small_font=power_caption_font=NULL;
+    settings_font=settings_title_font=message_font=NULL;
 }
 
 int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int show)
@@ -1165,9 +1231,10 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
         if (!stop_event) { CloseHandle(monitor_instance); CloseHandle(ready_event); return 1; }
     }
     preview_status = !lstrcmpiA(arguments, "/preview-single") || !lstrcmpiA(arguments, "/preview-multi") ||
-        !lstrcmpiA(arguments, "/preview-shutdown");
+        !lstrcmpiA(arguments, "/preview-shutdown") || !lstrcmpiA(arguments,"/preview-starting");
     preview_power = !lstrcmpiA(arguments,"/preview-power");
     preview = !lstrcmpiA(arguments, "/preview") || preview_status || preview_power;
+    if(!lstrcmpiA(arguments,"/preview-starting")) status_view=VIEW_STARTING;
     if (!lstrcmpiA(arguments, "/preview-single")) status_view = VIEW_WELCOME_SINGLE;
     if (!lstrcmpiA(arguments, "/preview-multi")) status_view = VIEW_WELCOME_MULTI;
     if (!lstrcmpiA(arguments, "/preview-shutdown")) status_view = VIEW_SHUTDOWN;
@@ -1230,7 +1297,7 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
         screen = window;
     } else {
         window = CreateWindowA(cls.lpszClassName, ui_text("\315\340\361\362\360\356\351\352\350 Welcome95","Welcome95 settings"), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-            CW_USEDEFAULT, CW_USEDEFAULT, 500, 315, NULL, NULL, instance, NULL);
+            CW_USEDEFAULT, CW_USEDEFAULT, SETTINGS_WIDTH, SETTINGS_HEIGHT, NULL, NULL, instance, NULL);
         ShowWindow(window, SW_SHOW);
     }
     if (!window) { release_ui_fonts(); return 1; }

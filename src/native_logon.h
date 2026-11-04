@@ -6,6 +6,8 @@
 /* Visually integrate the real dialog's controls without reading the password,
    replacing its window procedure, or changing control ownership. */
 BOOL native_logon_attach(HWND dialog, int x, int y, int width);
+BOOL native_logon_probe(HWND dialog);
+BOOL native_logon_pristine(void);
 BOOL native_logon_layout(int x, int y, int width);
 void native_logon_restore(BOOL reveal_original);
 BOOL native_logon_attached(void);

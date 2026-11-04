@@ -26,12 +26,20 @@ static void dimensions(HWND child,int width,int height,const char *description)
     RECT rect;
     check(GetWindowRect(child,&rect) && rect.right-rect.left==width && rect.bottom-rect.top==height,description);
 }
+static BOOL quiet_start(HWND dialog)
+{
+    native_logon_restore(FALSE);
+    if(!native_logon_probe(dialog)) return FALSE;
+    login_window=dialog; login_was_topmost=FALSE;
+    automatic_attempted=FALSE; single_submitted=FALSE; single_started=GetTickCount();
+    pending_profile=FALSE; set_status_view(screen,VIEW_STARTING); return TRUE;
+}
 void layout_test_entry(void)
 {
     WNDCLASSA cls;
     DWORD words[32];
     DLGTEMPLATE *form=(DLGTEMPLATE *)words;
-    HWND edit,username,submit,dialog,scroll;
+    HWND edit,username,submit,dialog,scroll,notice;
     RECT rect;
     HDC dc;
     HGDIOBJ old;
@@ -104,9 +112,42 @@ void layout_test_entry(void)
     check(!text[0],"the inert provider receives blank input, never a stored password");
     SetWindowTextA(edit,"synthetic-retry"); try_single_account_logon(); pump(); GetWindowTextA(edit,text,sizeof(text));
     check(submits==1 && !lstrcmpA(text,"synthetic-retry"),"failure leaves manual input intact without automatic retries");
-    profiles_remember("Second"); automatic_attempted=FALSE;
+    ready_event=CreateEventA(NULL,TRUE,FALSE,NULL); closed_event=CreateEventA(NULL,TRUE,FALSE,NULL);
+    SetWindowTextA(edit,"");
+    check(quiet_start(dialog),"prepare a quiet one-account attempt without changing the native form");
+    i=submits; try_single_account_logon(); pump();
+    check(submits==i+1 && single_submitted && status_view==VIEW_STARTING && !finishing &&
+        !IsWindowVisible(GetDlgItem(screen,ID_SUBMIT)) && !IsWindowVisible(GetDlgItem(screen,ID_POWER)),
+        "the blank attempt keeps only startup status visible while Windows decides");
+    check(WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+        "startup status during an attempt never fabricates authenticated readiness or shell release");
+    SetEvent(ready_event); SendMessageA(screen,WM_TIMER,TICK,0);
+    check(finishing && status_view==VIEW_WELCOME_SINGLE && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+        "only the simulated OS readiness moves quiet startup status into confirmed loading");
+    ResetEvent(ready_event); finishing=FALSE; manual_single_login();
+    SetWindowTextA(edit,""); quiet_start(dialog); i=submits;
+    EnableWindow(submit,FALSE); try_single_account_logon(); pump();
+    check(status_view==VIEW_LOGIN && automatic_attempted && submits==i,
+        "a password-required disabled OK returns from startup status to manual entry immediately");
+    EnableWindow(submit,TRUE); SetWindowTextA(edit,""); quiet_start(dialog); try_single_account_logon(); pump();
+    provider_process=GetCurrentProcessId(); EnableWindow(dialog,FALSE);
+    notice=CreateDialogIndirectParamA(instance,form,dialog,inert_logon,0); ShowWindow(notice,SW_SHOWNOACTIVATE);
+    service_single_pending();
+    check(status_view==VIEW_LOGIN && IsWindowVisible(notice) && !IsWindowEnabled(dialog) && automatic_attempted,
+        "a native rejection remains visible and disabled modal state survives manual fallback");
+    DestroyWindow(notice); EnableWindow(dialog,TRUE); provider_process=0;
+    native_logon_attach(dialog,x,y,width); SetWindowTextA(edit,"synthetic-manual-retry"); i=submits;
+    try_single_account_logon(); pump(); GetWindowTextA(edit,text,sizeof(text));
+    check(submits==i && !lstrcmpA(text,"synthetic-manual-retry"),"quiet rejection never retries or clears subsequent manual input");
+    release_logon(); automatic_attempted=FALSE; single_submitted=FALSE; single_started=GetTickCount()-4001;
+    set_status_view(screen,VIEW_STARTING); service_single_pending();
+    check(status_view==VIEW_LOGIN && automatic_attempted && IsWindowVisible(GetDlgItem(screen,ID_POWER)),
+        "a missing or stalled provider restores the full login and power controls after bounded waiting");
+    CloseHandle(ready_event); CloseHandle(closed_event); ready_event=closed_event=NULL;
+    native_logon_attach(dialog,x,y,width);
+    i=submits; profiles_remember("Second"); automatic_attempted=FALSE;
     try_single_account_logon(); pump();
-    check(!automatic_attempted && submits==1,"multiple accounts never trigger automatic login");
+    check(!automatic_attempted && submits==i,"multiple accounts never trigger automatic login");
     selected_profile=0; pending_profile=FALSE; compact_selected=FALSE; position_arrow(screen);
     check(account_open()==!compact_layout() && IsWindowVisible(GetDlgItem(screen,ID_SUBMIT))==!compact_layout(),
         "compact multi-account list starts without an expanded password card");

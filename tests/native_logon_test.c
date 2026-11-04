@@ -104,6 +104,18 @@ void test_entry(void)
     GetWindowRect(password, &password_rectangle);
     original_font=(HFONT)SendMessageA(password,WM_GETFONT,0,0);
     style = GetWindowLongA(dialog, GWL_STYLE);
+    SendMessageA(password,EM_SETMODIFY,FALSE,0); /* Known fixture default, not user input. */
+    check(native_logon_probe(dialog),"single-user probing classifies the real controls without embedding them");
+    GetWindowRect(dialog,&rectangle); GetWindowRect(password,&live_password_rectangle);
+    check(EqualRect(&rectangle,&original) && EqualRect(&live_password_rectangle,&password_rectangle) &&
+          IsWindowVisible(username) && IsWindowVisible(cancel) && IsWindowEnabled(cancel),
+          "a quiet probe preserves original geometry, visibility and Cancel state");
+    native_logon_restore(FALSE);
+    SendMessageA(password,EM_SETMODIFY,TRUE,0);
+    check(!native_logon_probe(dialog),"automatic probing rejects input already edited by the user");
+    GetWindowTextA(password,text,sizeof(text));
+    check(!lstrcmpA(text,"synthetic-test-only"),"a rejected quiet probe preserves the existing synthetic input");
+    SendMessageA(password,EM_SETMODIFY,FALSE,0);
     check(native_logon_attach(dialog, 345, 250, 260), "attach the reported 14-control Win95 network logon template");
     check(native_logon_attached(), "attachment remains valid");
     applied_font=(HFONT)SendMessageA(password,WM_GETFONT,0,0);

@@ -325,7 +325,7 @@ the exposed client rectangle must fit inside both the parent client and window.
 
 ## Larger native font and full Russian translation
 
-Current suite: 387 checks per resolution, including 50 native, 45 session and
+Earlier localization suite: 387 checks per resolution, including 50 native, 45 session and
 14 Russian UI checks. Native tests begin with an 11px fixture font, select the
 larger provider default without changing field geometry, and verify original-font
 restoration. The provider measures its selected font locally; no foreign GDI
@@ -341,3 +341,37 @@ Repeat on Win95: larger visible masks, no field resizing, standard-dialog origin
 font after Ctrl+Alt+Shift+L, complete Russian controls/errors and labels without
 clipping at 640x480. Follow the normal Disable/replace/Enable/reboot update flow
 so the newly embedded bootstrap is deployed too.
+
+
+## Startup screen, quiet single-account attempt and compact settings
+
+Current suite: **407 checks per resolution**, passed under Wine64/Xvfb at
+640×480×16, 800×600×24 and 1024×768×24. Includes 54 native-control, 45 layout,
+51 session/cross-process and 16 Russian UI checks. Production EXE and bootstrap
+are rebuilt and independently audited for PE4.0/i386, reviewed imports and no CRT.
+
+The quiet probe must preserve native geometry/styles/Cancel/focus/font and reject
+EM_GETMODIFY input without reading its contents. Startup hides chooser controls
+and does not signal readiness or closure after posting native OK. Only the OS
+ready event enters Welcome. Disabled OK, notices, a replacement form and bounded
+timeout restore manual login without retrying or clearing subsequent typed input.
+The separate-provider fixture also checks normal reattachment and shutdown-cancel
+while probing. Settings tests check all child bounds and CP1251 text fit inside
+the actual 410×234 outer window; the startup preview is inert.
+
+Target Windows 95 checks:
+
+1. One passwordless account: startup → lone greeting → shell, without chooser flash.
+2. One protected account: native error remains accessible, then visible password
+   field; correct/wrong manual passwords behave as before, no automatic retry.
+3. Slow/replaced/disabled provider: manual input appears after fallback and works.
+4. Repeat logoff/relogon, power cancellation and the hidden native-dialog rescue.
+5. Compare the smaller Russian greeting and compact settings at VGA and 1024×768.
+   English greeting stays 36pt; Russian is 32pt.
+
+After the final 40px startup-logo move, the 7 rendering and 16 Russian UI checks
+passed again at VGA; the refreshed startup capture was inspected.
+
+The new docs/previews/starting-en.png and settings-compact-en.png are real Wine
+captures with ACP1252 at VGA (no window-manager decorations), not Win95/Russian
+screenshots. Russian control text and geometry are measured in the test build.
