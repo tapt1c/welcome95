@@ -75,7 +75,7 @@ static PanelConfig panel_config;
 static char system_ini[MAX_PATH],control_ini[MAX_PATH],boot_directory[MAX_PATH];
 static BOOL rescue_mode;
 static BOOL preview, finishing, preparing_canvas, power_pending, controller_cover;
-static BOOL cover_repair_pending,repairing_cover;
+static BOOL cover_repair_pending,repairing_cover,canvas_show_painted;
 static DWORD finish_time;
 static HWND login_window;
 static BOOL login_was_topmost;
@@ -920,6 +920,17 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if (status_view != VIEW_LOGIN) set_status_view(hwnd, status_view);
         return 0;
     case WM_PAINT: paint_welcome(hwnd); return 0;
+    case WM_WINDOWPOSCHANGED:
+        if(preparing_canvas && screen==hwnd && IsWindowVisible(hwnd) &&
+           (((WINDOWPOS *)lp)->flags&SWP_SHOWWINDOW)) {
+            LRESULT result=DefWindowProcA(hwnd,message,wp,lp);
+            /* Complete the first frame inside ShowWindow itself. Waiting until
+               it returns can expose an unpainted popup during Win9x logoff. */
+            canvas_show_painted=RedrawWindow(hwnd,NULL,NULL,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+            startup_trace(startup_config.root,startup_config.backup_key,"canvas-show-painted",canvas_show_painted ? 0 : GetLastError());
+            return result;
+        }
+        break;
     case WM_DRAWITEM: draw_button((DRAWITEMSTRUCT *)lp); return TRUE;
     case WM_ERASEBKGND: return 1;
     case WM_CLOSE: return 0;
@@ -1101,12 +1112,15 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
    Publish screen before showing, then explicitly paint the entire composition. */
 static HWND create_canvas(void)
 {
+    canvas_show_painted=FALSE;
+    startup_trace(startup_config.root,startup_config.backup_key,"canvas-create-start",0);
     screen=CreateWindowExA(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,"Welcome95.Screen",APP,
         WS_POPUP|WS_CLIPCHILDREN,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
         NULL,NULL,instance,NULL);
     if(screen) {
         ShowWindow(screen,SW_SHOWNOACTIVATE);
-        RedrawWindow(screen,NULL,NULL,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+        if(!canvas_show_painted) RedrawWindow(screen,NULL,NULL,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+        startup_trace(startup_config.root,startup_config.backup_key,"canvas-presented",0);
     }
     return screen;
 }
@@ -1253,6 +1267,27 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         cover_repair_pending=FALSE;
         maintain_controller_cover(hwnd);
         return 0;
+    case WM_CLOSE:
+        if(controller_cover && resident_mode) {
+            startup_trace(startup_config.root,startup_config.backup_key,"cover-close-held",0);
+            return 0;
+        }
+        break;
+    case WM_WINDOWPOSCHANGING:
+        if(controller_cover && resident_mode && !repairing_cover) {
+            WINDOWPOS *position=(WINDOWPOS *)lp;
+            /* Keep only our temporary cover present until explicit handoff or
+               rescue. Queued repair alone allows a visible hidden interval. */
+            if(position->flags&SWP_HIDEWINDOW) {
+                position->flags=(position->flags&~SWP_HIDEWINDOW)|SWP_SHOWWINDOW;
+                startup_trace(startup_config.root,startup_config.backup_key,"cover-hide-held",0);
+            }
+            if(!(position->flags&SWP_NOZORDER) && position->hwndInsertAfter!=HWND_TOPMOST) {
+                position->hwndInsertAfter=HWND_TOPMOST;
+                startup_trace(startup_config.root,startup_config.backup_key,"cover-order-held",0);
+            }
+        }
+        break;
     case WM_SHOWWINDOW:
         if(!wp) queue_cover_repair(hwnd);
         break;

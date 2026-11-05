@@ -361,3 +361,15 @@ stale queued repairs cannot resurrect it after handoff or native rescue. Preserv
 actual displayed-frame pixel comparison, external-hide/display-reset regressions
 and 100 idle ticks without positioning/repaint. No cover repair signals readiness
 or changes shell/startup gates.
+
+
+The user's follow-up video still showed a ~0.27s teal interval after the first
+continuity fix. Queued repair is only a backstop: while controller_cover is true,
+keep this HWND visible/topmost in WM_WINDOWPOSCHANGING and ignore a generic
+WM_CLOSE. Explicit Disable/DestroyWindow and rescue must still work. Clear the
+cover flag before intentional hide. Paint a newly published preparing canvas
+synchronously during its SWP_SHOWWINDOW notification, before ShowWindow returns;
+retain fallback painting and avoid duplicating an already completed first frame.
+Keep regressions for immediate hide/demotion, generic close vs explicit Stop,
+and a teal/damage-injected synchronous show callback. Stage logs remain fixed
+numeric tags without user contents. Target video evidence is distinct from Wine.

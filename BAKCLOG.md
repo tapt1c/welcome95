@@ -806,3 +806,40 @@ without positioning/paint are covered. Main/boot/CPL PE audits pass with unchang
 - [ ] Repeat logoff -> Please wait -> account choice on Win95/86Box, including
       profile display resets. Cloud windows do not establish physical frame timing
       or the exact OS operation behind the video's desktop exposure.
+
+
+## 2026-11-05: follow-up 86Box video still exposes the desktop
+
+The user's new 16-second recording confirms matched wait/start artwork, but not
+continuous visibility. Frame inspection at 60fps finds 16 teal frames from about
+12.933s through 13.183s; the next blue frame is at 13.200s (~0.27s gap). Do not
+mark the earlier target-transition item complete. No private video/frames are
+published with the repository, and the exact Win95 operation is still unknown.
+
+The earlier tests checked eventual restoration and the final image after
+ShowWindow returned. Two tighter regressions failed on ee38844: immediately
+hidden cover before its repair message runs, and an unpainted replacement during
+its synchronous show notification. Retain the active cover's visibility/topmost
+position in WM_WINDOWPOSCHANGING, and ignore generic WM_CLOSE until deliberate
+handoff/rescue clears the flag. Explicit Stop still destroys it. Queued repair
+remains a backstop, with no idle painting or arbitrary external-window changes.
+
+Paint a published preparing canvas inside its SWP_SHOWWINDOW notification,
+before ShowWindow returns. Remember completed presentation to skip the redundant
+post-show paint, retaining a fallback if synchronous painting did not occur.
+Construction remains hidden; credentials/OS readiness, shell/startup ordering,
+font lifetime and rescue behavior are unchanged. Add fixed numeric stage tags
+canvas-create-start/canvas-show-painted/canvas-presented and cover-*-held so a
+future target trace can distinguish these paths without logging user contents.
+
+Validation: 538 checks per Wine64/Xvfb mode at 640x480x16, 800x600x24 and
+1024x768x24 (93 session, 64 startup, 64 power, 47 CPL). The show fixture injects
+teal pixels before dispatch and checks actual repaired pixels before the show
+callback returns. Immediate hide/demotion, generic-close retention and explicit
+Stop destruction pass alongside native rescue and no fake-ready checks.
+Main/boot/CPL remain at 177/70/15 reviewed imports; x86 build, resources and
+whitespace audits pass. Rebuilt EXE is included.
+
+- [ ] Retest this newer build's wait/start transition in Win95/86Box. These
+      stronger fixtures model two gaps; they do not prove the exact cause or
+      absence of the recorded physical gap on the target OS.

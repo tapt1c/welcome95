@@ -16,7 +16,7 @@ static BOOL WINAPI session_set_event(HANDLE event);
 static HANDLE output;
 static int failures,positions,cover_positions,cover_paints;
 static DWORD canvas_destroyed_at;
-static BOOL consume_creation_damage, visible_during_creation;
+static BOOL consume_creation_damage, visible_during_creation, synchronous_show_painted;
 static DWORD premature_paints,closed_publications;
 static BOOL early_init_probe,profiles_saw_frame,fonts_saw_frame,init_timer_guarded;
 static HDC wait_snapshot;
@@ -150,7 +150,20 @@ static LRESULT CALLBACK counted_screen(HWND hwnd,UINT message,WPARAM wp,LPARAM l
         return result;
     }
     if(consume_creation_damage && message==WM_WINDOWPOSCHANGED) {
-        LRESULT result=welcome_proc(hwnd,message,wp,lp);
+        LRESULT result;
+        BOOL showing=preparing_canvas && screen==hwnd && IsWindowVisible(hwnd) &&
+            (((WINDOWPOS *)lp)->flags&SWP_SHOWWINDOW);
+        if(showing) {
+            HDC dc=GetDC(hwnd); RECT area; HBRUSH brush=CreateSolidBrush(RGB(0,128,128));
+            GetClientRect(hwnd,&area); FillRect(dc,&area,brush); DeleteObject(brush); ReleaseDC(hwnd,dc);
+        }
+        result=welcome_proc(hwnd,message,wp,lp);
+        if(showing) {
+            HDC dc=GetDC(hwnd);
+            synchronous_show_painted=pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,10),RGB(0,48,156)) &&
+                pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,200),RGB(90,126,220));
+            ReleaseDC(hwnd,dc);
+        }
         if(IsWindowVisible(hwnd)) ValidateRect(hwnd,NULL);
         return result;
     }
@@ -515,10 +528,15 @@ void session_test_entry(void)
     check(controller_cover && IsWindowVisible(controller) && GetWindow(controller,GW_CHILD)==NULL,
         "logoff keeps a complete visual cover in the existing service window without creating credential controls");
 
-    ShowWindow(controller,SW_HIDE); pump(30);
+    ShowWindow(controller,SW_HIDE);
+    check(IsWindowVisible(controller),"an active wait cover cannot be hidden even before queued repairs can run");
+    pump(30);
     check(controller_cover && IsWindowVisible(controller),
         "an externally hidden wait cover is restored promptly without waiting for a new provider");
     ShowWindow(controller,SW_SHOWNOACTIVATE); /* Keep the remainder diagnostic on old builds too. */
+    SetWindowPos(controller,HWND_BOTTOM,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    check(GetWindowLongA(controller,GWL_EXSTYLE)&WS_EX_TOPMOST,
+        "the wait cover cannot be demoted behind the desktop before queued repair");
     SetWindowPos(controller,NULL,12,16,160,120,SWP_NOZORDER|SWP_NOACTIVATE);
     SendMessageA(controller,WM_DISPLAYCHANGE,0,0); pump(30);
     {
@@ -543,7 +561,7 @@ void session_test_entry(void)
     competitor=CreateWindowA("Welcome95.WhiteInput","Teardown background",WS_POPUP|WS_VISIBLE,
         0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),NULL,NULL,instance,NULL);
     UpdateWindow(competitor);
-    consume_creation_damage=TRUE; visible_during_creation=FALSE; premature_paints=0;
+    consume_creation_damage=TRUE; visible_during_creation=FALSE; synchronous_show_painted=FALSE; premature_paints=0;
     provider_worker=worker("/provider"); provider=NULL; start=GetTickCount();
     while((!provider || !IsWindowVisible(provider)) && (DWORD)(GetTickCount()-start)<5000) {
         pump(10); provider=FindWindowA("#32770","Welcome95 synthetic provider");
@@ -552,6 +570,7 @@ void session_test_entry(void)
     SendMessageA(controller,WM_TIMER,TICK,0); if(screen) KillTimer(screen,TICK);
     check(provider && screen && status_view==VIEW_LOGIN && !awaiting_logon && !session_running,
         "a new real provider triggers the next login canvas without exiting the controller");
+    check(synchronous_show_painted,"the replacement paints during its synchronous show notification before ShowWindow returns");
     check(!controller_cover && !IsWindowVisible(controller),"the waiting cover is hidden only after the replacement canvas is fully presented");
     check(wait_background_matches,wait_background_matches ? "Please wait and the first Windows starting frame have identical background, borders and logo pixels" : wait_difference);
     pump(30);
@@ -716,6 +735,14 @@ void session_test_entry(void)
     if(provider && IsWindow(provider)) SendMessageA(provider,WM_CLOSE,0,0);
     check(finished(provider_worker,5000),"the external provider fixture restores and exits normally");
     CloseHandle(provider_worker);
+    controller=CreateWindowA("Welcome95.Controller","Inert stop-cover fixture",WS_OVERLAPPED,0,0,0,0,NULL,NULL,instance,NULL);
+    KillTimer(controller,TICK); show_controller_cover(controller);
+    SendMessageA(controller,WM_CLOSE,0,0);
+    check(IsWindow(controller) && controller_cover && IsWindowVisible(controller),
+        "a generic close cannot remove an active wait cover before handoff");
+    SendMessageA(controller,WM_TIMER,TICK,0);
+    check(!IsWindow(controller) && !controller_cover,
+        "explicit Disable still destroys an active cover despite hide and close guards");
     check(startup_configure(&startup_config,FALSE)==0,"restore the isolated shell configuration after lifecycle tests");
     if(shell_process) CloseHandle(shell_process);
     CloseHandle(shell_event); CloseHandle(ready_event); CloseHandle(closed_event); CloseHandle(logoff_event); CloseHandle(ended_event); CloseHandle(controller_event); CloseHandle(stop_event);
