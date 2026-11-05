@@ -913,3 +913,46 @@ tracked x86 binary rebuilt; git diff --check passes.
 
 - [ ] Repeat the transition on this S3 VM. The cloud does not emulate this card
       or CPU; the exact target gap/driver operation is still unconfirmed.
+
+
+## 2026-11-05: user-requested persistent lower logo window
+
+The user reports that early-erase timing fixes did not materially remove the
+remaining gap and explicitly proposed two windows: a logo-only lower layer and
+the usual upper welcome UI. Add Welcome95.Backdrop as a persistent, control-free
+fullscreen popup with the existing background and Windows 95 logo, without status
+text. Show/paint it before the first upper canvas and retain its HWND through
+logoff, waiting-controller presentation and credential-canvas replacement.
+Own canvases are owned popups above it; provider/control ownership is unchanged.
+Keep it directly behind the visible upper surface and preserve native-input and
+OS-message priority. Temporary lower paint buffers/fonts are freed within paint;
+there is no second retained full-screen bitmap or modern layered-window API.
+
+Hide/detach the lower owner while the old upper image is still visible, then
+destroy the authenticated canvas and only afterward publish CanvasClosed. Hide
+both layers for native rescue. Disable/controller teardown destroys the lower
+HWND; previews hide on closure and destroy it before process exit. Shutdown
+hides it before OS save/cancel prompts, and cancellation restores normal layering.
+Reenable posts layer restoration until after the power modal's guarded teardown.
+No extra poll timer or idle painting/positioning is introduced. Add constant
+backdrop-presented/backdrop-hidden stage tags; creation errors stay numeric and
+fall back to the existing upper UI.
+
+Tests exposed initial-show ordering and cancellation ordering cases. Recheck the
+layer position after the first paint; use native popup ownership and a queued
+post-modal repair. Preserve one-HWND reuse, hidden-before-close acknowledgement,
+100 stable maintenance passes, display geometry and no focus activation.
+
+Validation: 559 checks per Wine64/Xvfb mode at 800x600x24, 640x480x16 and
+1024x768x24, including 110 session, 68 power, 64 startup and 47 CPL checks. Hiding
+the upper canvas exposes actual logo/background pixels with a blank status area.
+Check reuse across logoff/replacement, focus, full-screen resize, stable idle,
+real foreign native-input priority after a competing topmost window, power open/
+cancel/save-prompt ordering, rescue and complete cleanup. Resource-pressure
+injection now fails all pre-canvas bitmap allocations, covering both lower paint
+and initial-frame fallback. x86 main/boot/CPL audits pass at unchanged 177/70/15
+imports, no CRT/TLS; helpers rebuilt/embedded and tracked EXE included.
+
+- [ ] Repeat the two-window version on the user's Celeron100/S3 Vision864/4MB VM.
+      Own-window behavior and pixels are tested, but the physical target gap
+      cannot be declared gone from Wine alone.

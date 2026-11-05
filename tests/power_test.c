@@ -261,12 +261,32 @@ void power_test_entry(void)
     SendDlgItemMessageA(screen,ID_SUBMIT,BM_CLICK,0,0);
     check(finishing && status_view==VIEW_WELCOME_MULTI,"buffered submit buttons retain native BM_CLICK notifications in inert preview");
     finishing=FALSE; set_status_view(screen,VIEW_LOGIN);
+    show_backdrop();
+    {
+        BOOL okay=backdrop && IsWindowVisible(backdrop) && above(screen,backdrop);
+        char diagnostic[180];
+        wsprintfA(diagnostic,"lower layer order: exists=%d visible=%d upper-visible=%d upper-ex=%lu lower-ex=%lu rescue=%d",
+            backdrop!=NULL,IsWindowVisible(backdrop),IsWindowVisible(screen),(DWORD)GetWindowLongA(screen,GWL_EXSTYLE),
+            (DWORD)GetWindowLongA(backdrop,GWL_EXSTYLE),rescue_mode);
+        check(okay,okay ? "the lower layer stays under the canvas before a power operation" : diagnostic);
+    }
+    check(power_dialog_show(&host),"the power dialog opens over both layers with an inert action provider");
+    dialog=FindWindowA("Welcome95.PowerChoice",NULL);
+    SendMessageA(dialog,WM_COMMAND,IDCANCEL,0); pump(30);
+    {
+        BOOL okay=!power_dialog_active() && backdrop_active && IsWindowVisible(backdrop) && above(screen,backdrop);
+        char diagnostic[180];
+        wsprintfA(diagnostic,"cancel layers: dialog=%d active=%d visible=%d upper-visible=%d order=%d owned=%d",
+            power_dialog_active(),backdrop_active,IsWindowVisible(backdrop),IsWindowVisible(screen),above(screen,backdrop),GetWindow(screen,GW_OWNER)==backdrop);
+        check(okay,okay ? "power cancellation restores both layers in order" : diagnostic);
+    }
     /* Non-topmost status lets another application's native save prompt remain usable. */
     set_status_view(screen,VIEW_SHUTDOWN);
+    check(!backdrop_active && !IsWindowVisible(backdrop),"shutdown status removes the lower layer before native save/cancel prompts");
     foreign=CreateWindowExA(0,"STATIC","Save prompt fixture",WS_POPUP|WS_VISIBLE,100,100,80,40,NULL,NULL,instance,NULL);
     SetForegroundWindow(foreign); maintain_topmost(screen);
     check(above(foreign,screen),"shutdown status does not cover native save/cancel prompts"); DestroyWindow(foreign);
-    DestroyWindow(fixture); DestroyWindow(login_window); login_window=NULL; DestroyWindow(screen);
+    DestroyWindow(fixture); DestroyWindow(login_window); login_window=NULL; DestroyWindow(screen); destroy_backdrop();
     power_operations_release(); bundled_fonts_release(); CloseHandle(output);
     ExitProcess(failures ? 1 : 0);
 }

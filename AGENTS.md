@@ -389,8 +389,28 @@ a Win95 root cause solely from absent cover-*-held records.
 A prepared initial image must also answer WM_ERASEBKGND, not only WM_PAINT:
 returning TRUE without supplying its pixels can leave an old USER/driver's
 intermediate background visible. Cover and canvas may copy that same prepared
-image; do not allocate another framebuffer. When erase occurs inside BeginPaint,
+image; do not allocate another retained framebuffer for early erase. When erase occurs inside BeginPaint,
 record that this window's copy succeeded so the paint pass does not copy it twice.
 Save/restore nested paint context, preserve the supplied DC and existing non-cache
 fallback, and keep real early-erase pixels plus one-copy regressions. Hardware
 metadata or absent error codes alone do not establish a driver/VRAM failure.
+
+
+## Persistent lower logo window
+
+The user explicitly requested two visual layers after timing fixes did not remove
+the target gap. Welcome95.Backdrop is a persistent, control-free popup containing
+the background/logo only. Own credential canvases are owned popups above it;
+never change ownership/parents of the Windows provider or its Edit. Keep the
+lower HWND across logoff/canvas replacement. The existing controller's temporary
+wait screen is the upper status surface until its replacement is presented.
+
+Hide/detach the lower owner before authenticated canvas destruction and publish
+CanvasClosed only afterward. Rescue hides both layers; Disable/process teardown
+destroys the lower window. Shutdown hides it before OS save/cancel prompts; a
+cancelled action can restore it. Preview remains inert and cleans up its layer.
+Layer maintenance must preserve native-input/prompt priority, focus, display
+geometry and mutation-free idle behavior. Logo-only paint uses temporary fonts
+and a transient buffer, not another retained full-screen image. Check exposed
+lower pixels/no text, reuse, idle passes, native-input priority, modal cancellation,
+rescue and teardown in the window fixtures. Actual S3 timing still needs the VM.

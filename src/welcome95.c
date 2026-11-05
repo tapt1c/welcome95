@@ -25,6 +25,7 @@
 #define CONTROLLER_EVENT BOOTSTRAP_READY_EVENT
 #define SHOW_POWER (WM_USER+72)
 #define REPAIR_COVER (WM_USER+73)
+#define RESTORE_LAYERS (WM_USER+74)
 #define SHELL_STARTED (WM_USER+70)
 #define SESSION_STARTING (WM_USER+71)
 #define ENDSESSION_LOGOFF_95 0x80000000UL
@@ -65,7 +66,12 @@ static HANDLE ready_event, stop_event, running_event, closed_event, logoff_event
 static HANDLE shell_process, shell_event;
 static DWORD shell_process_id,shell_started_at,shell_released_at;
 static BOOL shell_confirmed,shell_released;
-static HWND controller;
+static HWND controller,backdrop;
+static BOOL backdrop_active,positioning_backdrop;
+static void show_backdrop(void);
+static void hide_backdrop(void);
+static void destroy_backdrop(void);
+static void maintain_backdrop(void);
 static BOOL resident_mode, session_running, awaiting_logon, power_requested, ending_unknown, shutdown_only_canvas;
 static DWORD provider_process;
 typedef DWORD (WINAPI *RegisterService)(DWORD,DWORD);
@@ -593,11 +599,13 @@ static void set_status_view(HWND hwnd, int view)
     static const int controls[] = { ID_SUBMIT, ID_POWER, ID_PREV, ID_NEXT, ID_PROFILE_SCROLL, ID_DONE, 201 };
     unsigned int index;
     status_view = view;
+    if(view==VIEW_SHUTDOWN) hide_backdrop();
     login_hotkeys(hwnd,sign_in_view());
     /* Cover the native field during shutdown without changing its visibility. */
     if(view==VIEW_SHUTDOWN && native_logon_attached())
         SetWindowPos(login_window,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
     SetWindowPos(hwnd,view==VIEW_SHUTDOWN ? HWND_NOTOPMOST : HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    if(view!=VIEW_SHUTDOWN && backdrop && !rescue_mode) show_backdrop();
     if (view != VIEW_LOGIN) {
         for (index = 0; index < sizeof(controls)/sizeof(controls[0]); ++index)
             ShowWindow(GetDlgItem(hwnd, controls[index]), SW_HIDE);
@@ -913,6 +921,131 @@ static BOOL window_above(HWND first,HWND second)
     }
     return FALSE;
 }
+/* The persistent lower layer has no controls or status text. */
+static void paint_backdrop_details(HDC dc)
+{
+    RECT area;
+    HFONT font=CreateFontA(-20,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Arial");
+    GetClientRect(backdrop,&area);
+    paint_background_artwork(dc,&area,VIEW_STARTING);
+    SetBkMode(dc,TRANSPARENT);
+    paint_logo_with_font(dc,(area.right-800)/2+435,(area.bottom-600)/2+228,font);
+    if(font) DeleteObject(font);
+}
+static HWND backdrop_upper(void)
+{
+    if(screen && IsWindowVisible(screen)) return screen;
+    if(controller_cover && controller && IsWindowVisible(controller)) return controller;
+    return NULL;
+}
+static LRESULT CALLBACK backdrop_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
+{
+    switch(message) {
+    case WM_PAINT:
+        {
+            PAINTSTRUCT paint; BOOL erased;
+            HDC dc=begin_cached_paint(hwnd,&paint,&erased);
+            if(!erased) early_cover_render(hwnd,dc,paint_backdrop_details);
+            EndPaint(hwnd,&paint); return 0;
+        }
+    case WM_ERASEBKGND:
+        if(wp) {
+            early_cover_render(hwnd,(HDC)wp,paint_backdrop_details);
+            if(cached_paint_window==hwnd) cached_paint_erased=TRUE;
+            return TRUE;
+        }
+        return FALSE;
+    case WM_MOUSEACTIVATE: return MA_NOACTIVATEANDEAT;
+    case WM_SETCURSOR: SetCursor(LoadCursor(NULL,IDC_ARROW)); return TRUE;
+    case WM_CLOSE: if(backdrop_active) return 0; break;
+    case WM_WINDOWPOSCHANGING:
+        if(backdrop_active && !positioning_backdrop) {
+            WINDOWPOS *position=(WINDOWPOS *)lp;
+            HWND upper=backdrop_upper();
+            if(position->flags&SWP_HIDEWINDOW) position->flags=(position->flags&~SWP_HIDEWINDOW)|SWP_SHOWWINDOW;
+            if(!(position->flags&SWP_NOZORDER)) position->hwndInsertAfter=upper ? upper : HWND_TOPMOST;
+        }
+        break;
+    case WM_DISPLAYCHANGE:
+        if(backdrop_active) {
+            maintain_backdrop();
+            RedrawWindow(hwnd,NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
+        }
+        return 0;
+    case WM_QUERYENDSESSION: return TRUE;
+    case WM_ENDSESSION: return 0; /* The registered controller owns session policy. */
+    case WM_DESTROY: backdrop=NULL; backdrop_active=FALSE; return 0;
+    }
+    return DefWindowProcA(hwnd,message,wp,lp);
+}
+static void maintain_backdrop(void)
+{
+    HWND upper,below; RECT bounds;
+    int width=GetSystemMetrics(SM_CXSCREEN),height=GetSystemMetrics(SM_CYSCREEN);
+    BOOL correct;
+    if(!backdrop_active || positioning_backdrop || !backdrop || !IsWindow(backdrop) || rescue_mode) return;
+    upper=backdrop_upper();
+    GetWindowRect(backdrop,&bounds);
+    correct=IsWindowVisible(backdrop) && (GetWindowLongA(backdrop,GWL_EXSTYLE)&WS_EX_TOPMOST) &&
+        bounds.left==0 && bounds.top==0 && bounds.right==width && bounds.bottom==height;
+    if(upper) {
+        below=GetWindow(upper,GW_HWNDNEXT);
+        while(below && !IsWindowVisible(below)) below=GetWindow(below,GW_HWNDNEXT);
+        if(below!=backdrop) correct=FALSE;
+    }
+    if(correct) return;
+    positioning_backdrop=TRUE;
+    SetWindowPos(backdrop,upper ? upper : HWND_TOPMOST,0,0,width,height,SWP_NOACTIVATE|SWP_SHOWWINDOW);
+    positioning_backdrop=FALSE;
+}
+static void set_canvas_owner(HWND owner)
+{
+    if(!screen || !IsWindow(screen) || GetWindow(screen,GW_OWNER)==owner) return;
+#ifdef _WIN64
+    SetWindowLongPtrA(screen,GWLP_HWNDPARENT,(LONG_PTR)owner);
+#else
+    SetWindowLongA(screen,GWL_HWNDPARENT,(LONG)owner);
+#endif
+}
+static void show_backdrop(void)
+{
+    BOOL needs_paint;
+    if(rescue_mode || status_view==VIEW_SHUTDOWN) return;
+    if(!backdrop || !IsWindow(backdrop)) {
+        WNDCLASSA cls;
+        zero_memory(&cls,sizeof(cls)); cls.hInstance=instance; cls.lpfnWndProc=backdrop_proc;
+        cls.hCursor=LoadCursor(NULL,IDC_ARROW); cls.lpszClassName="Welcome95.Backdrop";
+        if(!RegisterClassA(&cls) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS) return;
+        backdrop=CreateWindowExA(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,cls.lpszClassName,APP,WS_POPUP,
+            0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),NULL,NULL,instance,NULL);
+        if(!backdrop) { startup_trace(startup_config.root,startup_config.backup_key,"backdrop-create-error",GetLastError()); return; }
+    }
+    set_canvas_owner(backdrop);
+    needs_paint=!backdrop_active || !IsWindowVisible(backdrop);
+    backdrop_active=TRUE;
+    maintain_backdrop();
+    if(needs_paint) {
+        RedrawWindow(backdrop,NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
+        maintain_backdrop();
+        startup_trace(startup_config.root,startup_config.backup_key,"backdrop-presented",0);
+    }
+}
+static void hide_backdrop(void)
+{
+    if(backdrop && screen && GetWindow(screen,GW_OWNER)==backdrop) set_canvas_owner(NULL);
+    backdrop_active=FALSE;
+    if(backdrop && IsWindow(backdrop) && IsWindowVisible(backdrop)) {
+        ShowWindow(backdrop,SW_HIDE);
+        startup_trace(startup_config.root,startup_config.backup_key,"backdrop-hidden",0);
+    }
+}
+static void destroy_backdrop(void)
+{
+    hide_backdrop();
+    if(backdrop && IsWindow(backdrop)) DestroyWindow(backdrop);
+    backdrop=NULL;
+}
 static void maintain_topmost(HWND hwnd)
 {
     HWND input=NULL,popup=NULL,window;
@@ -920,6 +1053,7 @@ static void maintain_topmost(HWND hwnd)
     BOOL correct;
     UINT flags=SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER;
     if(rescue_mode || power_dialog_active() || status_view==VIEW_SHUTDOWN) return;
+    maintain_backdrop();
     if(status_view==VIEW_LOGIN && login_window && IsWindowVisible(login_window) &&
        (native_logon_attached() || prefer_native)) {
         input=login_window;
@@ -935,18 +1069,19 @@ static void maintain_topmost(HWND hwnd)
     if(batch) batch=DeferWindowPos(batch,hwnd,HWND_TOPMOST,0,0,0,0,flags);
     if(batch && input) batch=DeferWindowPos(batch,input,HWND_TOPMOST,0,0,0,0,flags);
     if(batch && popup) batch=DeferWindowPos(batch,popup,HWND_TOPMOST,0,0,0,0,flags);
-    if(batch && EndDeferWindowPos(batch)) return;
+    if(batch && EndDeferWindowPos(batch)) { maintain_backdrop(); return; }
     /* Allocation failure: place the canvas below input instead of raising it
        over the password rectangle and then uncovering it on every timer tick. */
     if(input) SetWindowPos(input,HWND_TOPMOST,0,0,0,0,flags);
     SetWindowPos(hwnd,input ? input : HWND_TOPMOST,0,0,0,0,flags);
     if(popup) SetWindowPos(popup,HWND_TOPMOST,0,0,0,0,flags);
+    maintain_backdrop();
 }
 
 static BOOL CALLBACK find_shell_window(HWND window,LPARAM parameter)
 {
     DWORD process=0;
-    if(window==screen || window==controller || !IsWindowVisible(window)) return TRUE;
+    if(window==screen || window==controller || window==backdrop || !IsWindowVisible(window)) return TRUE;
     GetWindowThreadProcessId(window,&process);
     if(process!=shell_process_id) return TRUE;
     *(BOOL *)parameter=TRUE; return FALSE;
@@ -974,6 +1109,8 @@ static void rescue_native_logon(void);
 static void release_ui_fonts(void);
 static void close_canvas(void)
 {
+    /* Keep the old upper frame visible until its lower owner is hidden. */
+    hide_backdrop();
     if(screen && IsWindow(screen)) DestroyWindow(screen);
     if(closed_event) SetEvent(closed_event); /* after DestroyWindow has returned */
     startup_trace(startup_config.root,startup_config.backup_key,"canvas-closed",0);
@@ -1014,6 +1151,12 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if (status_view != VIEW_LOGIN) set_status_view(hwnd, status_view);
         return 0;
     case WM_PAINT: paint_welcome(hwnd); return 0;
+    case WM_ENABLE:
+        if(wp && backdrop_active) PostMessageA(hwnd,RESTORE_LAYERS,0,0);
+        break;
+    case RESTORE_LAYERS:
+        if(!power_dialog_active()) maintain_topmost(hwnd);
+        return 0;
     case WM_WINDOWPOSCHANGED:
         if(preparing_canvas && screen==hwnd && IsWindowVisible(hwnd) &&
            (((WINDOWPOS *)lp)->flags&SWP_SHOWWINDOW)) {
@@ -1132,7 +1275,8 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             KillTimer(hwnd,2); show_power_dialog(hwnd); return 0;
         }
         if (stop_event && WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
-            DestroyWindow(hwnd); return 0;
+            if(resident_mode) close_canvas(); else DestroyWindow(hwnd);
+            return 0;
         }
         if(power_dialog_active() || preparing_canvas) return 0;
         if (sign_in_view() && !finishing && ready_event && WaitForSingleObject(ready_event, 0) == WAIT_OBJECT_0) {
@@ -1197,6 +1341,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if (escape_hotkey) UnregisterHotKey(hwnd, 1);
         if (close_hotkey) UnregisterHotKey(hwnd, 2);
         KillTimer(hwnd, TICK); power_pending=FALSE; release_logon(); screen = NULL;
+        if(!resident_mode) hide_backdrop();
         if (!monitor_active) PostQuitMessage(0);
         return 0;
     }
@@ -1209,6 +1354,7 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
 static HWND create_canvas(void)
 {
     canvas_show_painted=FALSE;
+    if(status_view!=VIEW_SHUTDOWN) show_backdrop();
     release_first_frame();
     if(preparing_canvas && status_view==VIEW_STARTING) {
         BOOL prepared;
@@ -1220,7 +1366,7 @@ static HWND create_canvas(void)
     startup_trace(startup_config.root,startup_config.backup_key,"canvas-create-start",0);
     screen=CreateWindowExA(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,"Welcome95.Screen",APP,
         WS_POPUP|WS_CLIPCHILDREN,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
-        NULL,NULL,instance,NULL);
+        backdrop,NULL,instance,NULL);
     if(screen) {
         startup_trace(startup_config.root,startup_config.backup_key,"canvas-show-start",0);
         ShowWindow(screen,SW_SHOWNOACTIVATE);
@@ -1228,6 +1374,7 @@ static HWND create_canvas(void)
         startup_trace(startup_config.root,startup_config.backup_key,"canvas-presented",0);
     }
     release_first_frame();
+    if(screen) maintain_backdrop(); else hide_backdrop();
     return screen;
 }
 
@@ -1239,6 +1386,7 @@ static void maintain_controller_cover(HWND window)
     LONG style,extended;
     int width=GetSystemMetrics(SM_CXSCREEN),height=GetSystemMetrics(SM_CYSCREEN);
     if(!controller_cover || repairing_cover || !window || !IsWindow(window)) return;
+    maintain_backdrop();
     style=GetWindowLongA(window,GWL_STYLE); extended=GetWindowLongA(window,GWL_EXSTYLE);
     GetWindowRect(window,&bounds);
     if(IsWindowVisible(window) && (style&WS_POPUP) && (extended&WS_EX_TOPMOST) && (extended&WS_EX_TOOLWINDOW) &&
@@ -1249,6 +1397,7 @@ static void maintain_controller_cover(HWND window)
     SetWindowPos(window,HWND_TOPMOST,0,0,width,height,SWP_NOACTIVATE|SWP_SHOWWINDOW);
     RedrawWindow(window,NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
     repairing_cover=FALSE;
+    maintain_backdrop();
 }
 static void queue_cover_repair(HWND window)
 {
@@ -1259,6 +1408,7 @@ static void show_controller_cover(HWND window)
 {
     if(!window || !IsWindow(window)) return;
     controller_cover=TRUE;
+    show_backdrop();
     maintain_controller_cover(window);
 }
 static void hide_controller_cover(void)
@@ -1345,6 +1495,7 @@ static void rescue_native_logon(void)
         native_logon_restore(FALSE);
         ShowWindow(screen,SW_HIDE);
     }
+    hide_backdrop();
     if(login_window && IsWindow(login_window) && IsWindowVisible(login_window)) found=login_window;
     else EnumWindows(find_logon,(LPARAM)&found);
     if(found) {
@@ -1494,6 +1645,7 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         return 0;
     case WM_DESTROY:
         controller_cover=cover_repair_pending=FALSE;
+        destroy_backdrop();
         if(resident_mode) UnregisterHotKey(hwnd,ID_RESCUE_HOTKEY);
         KillTimer(hwnd,TICK); PostQuitMessage(0); return 0;
     }
@@ -1706,6 +1858,7 @@ int WINAPI WinMain(HINSTANCE current, HINSTANCE previous, LPSTR arguments, int s
     if (stop_event) CloseHandle(stop_event);
     if (running_event) CloseHandle(running_event);
     if (monitor_instance) CloseHandle(monitor_instance);
+    destroy_backdrop();
     release_ui_fonts();
     return 0;
 }

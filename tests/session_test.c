@@ -24,6 +24,10 @@ static int failures,positions,cover_positions,cover_paints;
 static DWORD canvas_destroyed_at;
 static BOOL consume_creation_damage, visible_during_creation, synchronous_show_painted;
 static DWORD premature_paints,closed_publications;
+static BOOL close_with_visible_backdrop;
+static WNDPROC original_backdrop_proc;
+static int backdrop_positions,backdrop_paints;
+static HWND first_backdrop;
 static BOOL observing_first_show,prepared_behind_cover,deferred_ui_fonts;
 static BOOL fail_prepared_frame,prepared_failure_consumed;
 static int bitmap_allocations_during_show;
@@ -39,7 +43,7 @@ static BOOL compare_wait_background(HWND window);
 static HBITMAP WINAPI fixture_create_bitmap(HDC device,int width,int height)
 {
     if(fail_prepared_frame && preparing_canvas && !screen) {
-        fail_prepared_frame=FALSE; prepared_failure_consumed=TRUE;
+        prepared_failure_consumed=TRUE;
         return NULL;
     }
     if(observing_first_show) ++bitmap_allocations_during_show;
@@ -54,7 +58,10 @@ static BOOL WINAPI fixture_bit_blt(HDC target,int x,int y,int width,int height,H
 }
 static BOOL WINAPI session_set_event(HANDLE event)
 {
-    if(event && event==closed_event) ++closed_publications;
+    if(event && event==closed_event) {
+        ++closed_publications;
+        if(backdrop && IsWindowVisible(backdrop)) close_with_visible_backdrop=TRUE;
+    }
     return SetEvent(event);
 }
 static WNDPROC original_password_proc;
@@ -300,6 +307,12 @@ static INT_PTR CALLBACK notice_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
 {
     (void)hwnd; (void)message; (void)wp; (void)lp; return FALSE;
 }
+static LRESULT CALLBACK counted_backdrop(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
+{
+    if(message==WM_WINDOWPOSCHANGING) ++backdrop_positions;
+    if(message==WM_PAINT) ++backdrop_paints;
+    return CallWindowProcA(original_backdrop_proc,hwnd,message,wp,lp);
+}
 static LRESULT CALLBACK counted_controller(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
 {
     if(controller_cover && message==WM_WINDOWPOSCHANGING) ++cover_positions;
@@ -483,6 +496,39 @@ void session_test_entry(void)
     release_ui_fonts(); early_init_probe=TRUE;
     begin_logon_cycle(FALSE); early_init_probe=FALSE; KillTimer(screen,TICK); SetEvent(controller_event);
     check(profiles_saw_frame && fonts_saw_frame,"the first complete startup frame is visible before profile discovery or embedded font extraction");
+    first_backdrop=backdrop;
+    check(backdrop && backdrop_active && IsWindowVisible(backdrop) && window_above(screen,backdrop) &&
+        GetWindow(backdrop,GW_CHILD)==NULL,"a control-free persistent lower window stays beneath the normal welcome canvas");
+    original_backdrop_proc=(WNDPROC)SetWindowLongPtrA(backdrop,GWLP_WNDPROC,(LONG_PTR)counted_backdrop);
+    ShowWindow(screen,SW_HIDE);
+    RedrawWindow(backdrop,NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
+    {
+        BOOL clean=TRUE; int ink=0,px,py;
+        dc=GetDC(backdrop);
+        for(py=cy(334);py<cy(365);py+=2) for(px=cx(300);px<cx(552);px+=3)
+            if(!pixel_near(GetPixel(dc,px,py),RGB(90,126,220))) clean=FALSE;
+        for(py=cy(228);py<cy(314);py+=2) for(px=cx(435);px<cx(572);px+=2)
+            if(!pixel_near(GetPixel(dc,px,py),RGB(90,126,220))) ++ink;
+        check(clean && ink>100 && pixel_near(GetPixel(dc,10,10),RGB(0,48,156)),
+            "hiding the upper window reveals the Windows logo and background with no status caption");
+        ReleaseDC(backdrop,dc);
+    }
+    foreground=GetForegroundWindow();
+    check(SendMessageA(backdrop,WM_MOUSEACTIVATE,0,0)==MA_NOACTIVATEANDEAT && GetForegroundWindow()==foreground,
+        "the lower layer does not activate or steal keyboard focus");
+    ShowWindow(screen,SW_SHOWNOACTIVATE); RedrawWindow(screen,NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
+    maintain_topmost(screen);
+    SetWindowPos(backdrop,screen,12,16,160,120,SWP_NOACTIVATE);
+    SendMessageA(backdrop,WM_DISPLAYCHANGE,0,0); pump(30);
+    {
+        RECT bounds; GetWindowRect(backdrop,&bounds);
+        check(bounds.left==0 && bounds.top==0 && bounds.right==GetSystemMetrics(SM_CXSCREEN) &&
+            bounds.bottom==GetSystemMetrics(SM_CYSCREEN) && window_above(screen,backdrop),
+            "the lower layer restores full-screen geometry while retaining its position beneath the canvas");
+    }
+    backdrop_positions=backdrop_paints=0;
+    for(i=0;i<100;++i) { maintain_topmost(screen); SendMessageA(controller,WM_TIMER,TICK,0); }
+    check(!backdrop_positions && !backdrop_paints,"100 stable layer maintenance passes do not reposition or repaint the lower window");
     old_screen=screen; shell_worker=worker("/boot-welcome");
     check(finished(shell_worker,5000) && screen==old_screen && IsWindowVisible(screen),
         "a duplicate welcome bootstrap leaves an existing controller and canvas in place");
@@ -531,6 +577,8 @@ void session_test_entry(void)
     closed_at=canvas_destroyed_at;
     check(!screen && session_running && WaitForSingleObject(closed_event,0)==WAIT_OBJECT_0 &&
         (LONG)(closed_at-launched)>=0,"welcome disappears after shell start and acknowledges only completed destruction");
+    check(backdrop==first_backdrop && !backdrop_active && !IsWindowVisible(backdrop) && !close_with_visible_backdrop,
+        "shell handoff hides the lower layer before publishing CanvasClosed and retains it for reuse");
     check(finished(startup_worker,5000) && finished(shell_worker,5000),"both gates finish after their separate shell-launch and close conditions");
     CloseHandle(startup_worker); CloseHandle(shell_worker);
     {
@@ -572,6 +620,8 @@ void session_test_entry(void)
         "committed logoff retires session GDI resources without creating children during desktop teardown");
     check(controller_cover && IsWindowVisible(controller) && GetWindow(controller,GW_CHILD)==NULL,
         "logoff keeps a complete visual cover in the existing service window without creating credential controls");
+    check(backdrop==first_backdrop && backdrop_active && IsWindowVisible(backdrop) && window_above(controller,backdrop),
+        "logoff reuses the same lower HWND beneath the temporary wait screen");
 
     ShowWindow(controller,SW_HIDE);
     check(IsWindowVisible(controller),"an active wait cover cannot be hidden even before queued repairs can run");
@@ -625,6 +675,8 @@ void session_test_entry(void)
     check(!first_frame_dc && !first_frame_bitmap && !first_frame_old,
         "temporary first-frame GDI resources are released immediately after presentation");
     check(!controller_cover && !IsWindowVisible(controller),"the waiting cover is hidden only after the replacement canvas is fully presented");
+    check(backdrop==first_backdrop && IsWindowVisible(backdrop) && window_above(screen,backdrop),
+        "replacing the credential canvas preserves the lower HWND and its stacking position");
     check(wait_background_matches,wait_background_matches ? "Please wait and the first Windows starting frame have identical background, borders and logo pixels" : wait_difference);
     pump(30);
     check(!controller_cover && !IsWindowVisible(controller),"queued cover repairs cannot resurrect it after a completed canvas handoff");
@@ -664,6 +716,7 @@ void session_test_entry(void)
     fail_prepared_frame=TRUE; prepared_failure_consumed=FALSE;
     startup_worker=worker("/gate-startup"); start=GetTickCount();
     while(!screen && (DWORD)(GetTickCount()-start)<5000) pump(10);
+    fail_prepared_frame=FALSE;
     if(screen) KillTimer(screen,TICK);
     check(screen && IsWindow(screen) && !awaiting_logon,"a new OS startup gate also restores welcome after a reasonless session end");
     dc=screen ? GetDC(screen) : NULL;
@@ -705,6 +758,11 @@ void session_test_entry(void)
     }
     check(native_logon_attached() && login_window==provider,
         "the repeated login attaches real controls owned by a separate synthetic provider process");
+    competitor=CreateWindowExA(WS_EX_TOPMOST,"STATIC","Inert layered competitor",WS_POPUP|WS_VISIBLE,10,10,60,40,NULL,NULL,instance,NULL);
+    maintain_topmost(screen);
+    check(window_above(provider,screen) && window_above(screen,backdrop) && window_above(backdrop,competitor),
+        "priority repair preserves native input above the owned upper layer and its lower backdrop");
+    DestroyWindow(competitor);
     {
         RECT original,after; LONG style; DWORD_PTR modified=0;
         require_account_choice=FALSE; /* A separate fresh-controller startup fixture. */
@@ -783,6 +841,7 @@ void session_test_entry(void)
     check(rescue_mode && !IsWindowVisible(screen) && !GetDlgItem(screen,106) && IsWindowVisible(provider) &&
         (GetWindowLongA(provider,GWL_STYLE)&WS_CAPTION) && !native_logon_attached(),
         "the hidden controller shortcut restores the real native dialog and hides the canvas");
+    check(!backdrop_active && !IsWindowVisible(backdrop),"native rescue hides the lower layer as well as the main canvas");
     check(WaitForSingleObject(ready_event,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
         "native rescue never submits credentials or marks authentication complete");
     startup_worker=worker("/gate-startup"); start=GetTickCount();
@@ -791,6 +850,7 @@ void session_test_entry(void)
     check(finishing && WaitForSingleObject(startup_worker,0)==WAIT_TIMEOUT,"a second session waits on its own loading state rather than stale signals");
     SetEvent(stop_event); SendMessageA(controller,WM_TIMER,TICK,0);
     check(!IsWindow(controller) && !screen && finished(startup_worker,5000),"Disable releases a pending startup gate and removes the canvas");
+    check(!backdrop && !IsWindow(first_backdrop),"Disable destroys the persistent lower window");
     CloseHandle(startup_worker);
     if(provider && IsWindow(provider)) SendMessageA(provider,WM_CLOSE,0,0);
     check(finished(provider_worker,5000),"the external provider fixture restores and exits normally");

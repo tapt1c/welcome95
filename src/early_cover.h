@@ -16,11 +16,11 @@ static void early_cover_background(HDC dc,const RECT *area)
         early_cover_fill(dc,rect,RGB(57-band*57/127,52-band*4/127,173-band*17/127));
     }
 }
-static void early_cover_paint(HWND window,void (*details)(HDC))
+static void early_cover_render(HWND window,HDC target,void (*details)(HDC))
 {
-    PAINTSTRUCT paint; RECT area; HDC target,dc,memory;
+    RECT area; HDC dc,memory;
     HBITMAP frame; HGDIOBJ old=NULL;
-    target=BeginPaint(window,&paint); GetClientRect(window,&area);
+    GetClientRect(window,&area);
     memory=CreateCompatibleDC(target);
     frame=memory ? CreateCompatibleBitmap(target,area.right,area.bottom) : NULL;
     dc=target;
@@ -32,6 +32,12 @@ static void early_cover_paint(HWND window,void (*details)(HDC))
         BitBlt(target,0,0,area.right,area.bottom,memory,0,0,SRCCOPY);
         SelectObject(memory,old); DeleteObject(frame); DeleteDC(memory);
     }
+}
+static void early_cover_paint(HWND window,void (*details)(HDC))
+{
+    PAINTSTRUCT paint;
+    HDC target=BeginPaint(window,&paint);
+    early_cover_render(window,target,details);
     EndPaint(window,&paint);
 }
 #endif
