@@ -384,3 +384,13 @@ Keep dimension checks and normal rendering fallback without readiness/closure
 signals. Preserve tests for allocation outside visible show, unchanged real frame
 pixels, deferred fonts, cleanup and an injected allocation failure. Do not infer
 a Win95 root cause solely from absent cover-*-held records.
+
+
+A prepared initial image must also answer WM_ERASEBKGND, not only WM_PAINT:
+returning TRUE without supplying its pixels can leave an old USER/driver's
+intermediate background visible. Cover and canvas may copy that same prepared
+image; do not allocate another framebuffer. When erase occurs inside BeginPaint,
+record that this window's copy succeeded so the paint pass does not copy it twice.
+Save/restore nested paint context, preserve the supplied DC and existing non-cache
+fallback, and keep real early-erase pixels plus one-copy regressions. Hardware
+metadata or absent error codes alone do not establish a driver/VRAM failure.

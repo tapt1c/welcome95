@@ -881,3 +881,35 @@ no CRT/TLS; rebuilt tracked EXE included.
 - [ ] Run this prepared-frame build on Win95/86Box and compare physical transition
       plus frame-ready/show-start/show-painted timings. Wine does not establish
       that the recorded 11-frame gap has disappeared on the target system.
+
+
+## 2026-11-05: early background presentation on the slow 86Box target
+
+The user still sees a small gap with the prepared-frame build and supplied the
+VM configuration: Socket370/Celeron 100MHz, 64MB RAM, S3 Vision864 with 4MB VRAM.
+The newer target log records 41ms preparation and 27ms creation/first show after
+logoff (cold preparation 78ms, creation/show 27ms). This demonstrates moved work,
+not disappearance of the physical gap or a VRAM/driver defect. A nominal
+800x600x24 image is ~1.37MiB; actual GDI placement belongs to the driver.
+
+The own canvas still answered WM_ERASEBKGND with TRUE without supplying prepared
+pixels. A regression injects teal and requests erase before the first WM_PAINT;
+it failed on 64edc5e. Copy the already prepared frame during early erase as well
+as paint. The waiting controller can use that same image during the handoff,
+including before the new canvas's children exist. No additional framebuffer is
+allocated. For erase nested inside BeginPaint, remember the successful copy for
+that HWND so the paint pass does not transfer the frame twice. Save/restore
+nested paint context; keep cache-size checks, fallback, immediate cleanup and
+mutation-free idle behavior. Native password/OS readiness and shell gates remain.
+
+Add canvas-erase-painted/cover-erase-painted tags only for successful early
+copies outside BeginPaint, without logging content. Validation: 544 checks in
+each Wine64/Xvfb mode (800x600x24, 640x480x16, 1024x768x24), including 99 session,
+64 startup, 64 power and 47 CPL checks. Verify actual early-erase pixels in both
+own HWNDs and exactly one cache transfer in erase/paint, plus existing no-visible-
+allocation, memory-failure, cleanup, rescue and native-input regressions.
+Main/boot/CPL PE audits remain at 177/70/15 imports, with embedded resources and
+tracked x86 binary rebuilt; git diff --check passes.
+
+- [ ] Repeat the transition on this S3 VM. The cloud does not emulate this card
+      or CPU; the exact target gap/driver operation is still unconfirmed.

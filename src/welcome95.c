@@ -80,6 +80,8 @@ static HDC first_frame_dc;
 static HBITMAP first_frame_bitmap;
 static HGDIOBJ first_frame_old;
 static int first_frame_width,first_frame_height;
+static HWND cached_paint_window;
+static BOOL cached_paint_erased;
 static DWORD finish_time;
 static HWND login_window;
 static BOOL login_was_topmost;
@@ -553,6 +555,38 @@ static BOOL prepare_first_frame(void)
     if(!logo_font || !text_font) { release_first_frame(); return FALSE; }
     return TRUE;
 }
+static BOOL first_frame_matches(HWND window)
+{
+    RECT area;
+    return first_frame_dc && preparing_canvas && status_view==VIEW_STARTING &&
+        GetClientRect(window,&area) && area.right==first_frame_width && area.bottom==first_frame_height;
+}
+static BOOL copy_first_frame(HWND window,HDC target)
+{
+    return target && first_frame_matches(window) &&
+        BitBlt(target,0,0,first_frame_width,first_frame_height,first_frame_dc,0,0,SRCCOPY);
+}
+static BOOL erase_first_frame(HWND window,HDC target)
+{
+    BOOL copied;
+    if(!first_frame_matches(window)) return TRUE;
+    copied=copy_first_frame(window,target);
+    if(copied && cached_paint_window==window) cached_paint_erased=TRUE;
+    else if(copied) startup_trace(startup_config.root,startup_config.backup_key,
+        window==controller ? "cover-erase-painted" : "canvas-erase-painted",0);
+    return copied;
+}
+static HDC begin_cached_paint(HWND window,PAINTSTRUCT *paint,BOOL *erased)
+{
+    HDC target;
+    HWND previous_window=cached_paint_window;
+    BOOL previous_erased=cached_paint_erased;
+    cached_paint_window=window; cached_paint_erased=FALSE;
+    target=BeginPaint(window,paint);
+    *erased=cached_paint_erased;
+    cached_paint_window=previous_window; cached_paint_erased=previous_erased;
+    return target;
+}
 static void login_hotkeys(HWND hwnd,BOOL enable);
 static void set_status_view(HWND hwnd, int view)
 {
@@ -625,12 +659,11 @@ static void paint_welcome(HWND hwnd)
     HDC dc, memory;
     HBITMAP frame;
     HGDIOBJ old=NULL;
+    BOOL erased;
     int index, top;
-    BeginPaint(hwnd,&paint); dc=paint.hdc;
+    dc=begin_cached_paint(hwnd,&paint,&erased);
     GetClientRect(hwnd,&area);
-    if(first_frame_dc && preparing_canvas && status_view==VIEW_STARTING &&
-       area.right==first_frame_width && area.bottom==first_frame_height &&
-       BitBlt(dc,0,0,area.right,area.bottom,first_frame_dc,0,0,SRCCOPY)) {
+    if(first_frame_matches(hwnd) && (erased || copy_first_frame(hwnd,dc))) {
         EndPaint(hwnd,&paint); return;
     }
     /* Allocation or display changes may invalidate the prepared image. */
@@ -993,7 +1026,9 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         }
         break;
     case WM_DRAWITEM: draw_button((DRAWITEMSTRUCT *)lp); return TRUE;
-    case WM_ERASEBKGND: return 1;
+    case WM_ERASEBKGND:
+        /* Older USER/drivers can request the background before WM_PAINT. */
+        return erase_first_frame(hwnd,(HDC)wp);
     case WM_CLOSE: return 0;
     case WM_HOTKEY:
         if(power_dialog_active() && (wp==1 || wp==2)) power_dialog_close();
@@ -1326,10 +1361,18 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
 {
     switch(message) {
     case WM_PAINT:
-        if(controller_cover && resident_mode) { early_cover_paint(hwnd,paint_wait_details); return 0; }
+        if(controller_cover && resident_mode) {
+            if(first_frame_matches(hwnd)) {
+                PAINTSTRUCT paint; BOOL erased;
+                HDC dc=begin_cached_paint(hwnd,&paint,&erased);
+                if(!erased) copy_first_frame(hwnd,dc);
+                EndPaint(hwnd,&paint);
+            } else early_cover_paint(hwnd,paint_wait_details);
+            return 0;
+        }
         break;
     case WM_ERASEBKGND:
-        if(controller_cover && resident_mode) return TRUE;
+        if(controller_cover && resident_mode) return erase_first_frame(hwnd,(HDC)wp);
         break;
     case WM_SETCURSOR:
         if(controller_cover && LOWORD(lp)==HTCLIENT) { SetCursor(LoadCursor(NULL,IDC_ARROW)); return TRUE; }

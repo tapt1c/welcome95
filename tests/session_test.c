@@ -5,12 +5,15 @@ static BOOL single_profile_fixture;
 static void fixture_profiles_load(void);
 static int fixture_fonts_load(HINSTANCE module);
 static HBITMAP WINAPI fixture_create_bitmap(HDC device,int width,int height);
+static BOOL WINAPI fixture_bit_blt(HDC target,int x,int y,int width,int height,HDC source,int sx,int sy,DWORD operation);
 #define bundled_fonts_load fixture_fonts_load
 #define profiles_load fixture_profiles_load
 static BOOL WINAPI session_set_event(HANDLE event);
 #define SetEvent session_set_event
 #define CreateCompatibleBitmap fixture_create_bitmap
+#define BitBlt fixture_bit_blt
 #include "../src/welcome95.c"
+#undef BitBlt
 #undef CreateCompatibleBitmap
 #undef SetEvent
 #undef profiles_load
@@ -24,6 +27,8 @@ static DWORD premature_paints,closed_publications;
 static BOOL observing_first_show,prepared_behind_cover,deferred_ui_fonts;
 static BOOL fail_prepared_frame,prepared_failure_consumed;
 static int bitmap_allocations_during_show;
+static BOOL early_erase_painted,early_cover_erase_painted,cache_copy_probe,single_erase_copy;
+static int first_frame_copies;
 static BOOL early_init_probe,profiles_saw_frame,fonts_saw_frame,init_timer_guarded;
 static HDC wait_snapshot;
 static HBITMAP wait_frame;
@@ -41,6 +46,11 @@ static HBITMAP WINAPI fixture_create_bitmap(HDC device,int width,int height)
     if(consume_creation_damage && preparing_canvas && !screen && controller_cover && IsWindowVisible(controller))
         prepared_behind_cover=TRUE;
     return CreateCompatibleBitmap(device,width,height);
+}
+static BOOL WINAPI fixture_bit_blt(HDC target,int x,int y,int width,int height,HDC source,int sx,int sy,DWORD operation)
+{
+    if(cache_copy_probe && source==first_frame_dc) ++first_frame_copies;
+    return BitBlt(target,x,y,width,height,source,sx,sy,operation);
 }
 static BOOL WINAPI session_set_event(HANDLE event)
 {
@@ -161,6 +171,14 @@ static LRESULT CALLBACK counted_screen(HWND hwnd,UINT message,WPARAM wp,LPARAM l
     if(consume_creation_damage && message==WM_CREATE) {
         LRESULT result;
         visible_during_creation=(GetWindowLongA(hwnd,GWL_STYLE)&WS_VISIBLE)!=0;
+        if(first_frame_dc && preparing_canvas && controller_cover) {
+            HDC dc=GetDC(controller); RECT area; HBRUSH brush=CreateSolidBrush(RGB(0,128,128));
+            GetClientRect(controller,&area); FillRect(dc,&area,brush); DeleteObject(brush);
+            SendMessageA(controller,WM_ERASEBKGND,(WPARAM)dc,0);
+            early_cover_erase_painted=pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,10),RGB(0,48,156)) &&
+                pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,200),RGB(90,126,220));
+            ReleaseDC(controller,dc);
+        }
         result=welcome_proc(hwnd,message,wp,lp);
         /* Model Win9x consuming construction-time damage before first display. */
         ValidateRect(hwnd,NULL);
@@ -172,7 +190,12 @@ static LRESULT CALLBACK counted_screen(HWND hwnd,UINT message,WPARAM wp,LPARAM l
             (((WINDOWPOS *)lp)->flags&SWP_SHOWWINDOW);
         if(showing) {
             HDC dc=GetDC(hwnd); RECT area; HBRUSH brush=CreateSolidBrush(RGB(0,128,128));
-            GetClientRect(hwnd,&area); FillRect(dc,&area,brush); DeleteObject(brush); ReleaseDC(hwnd,dc);
+            GetClientRect(hwnd,&area); FillRect(dc,&area,brush); DeleteObject(brush);
+            /* Legacy USER may ask for the background before the first WM_PAINT. */
+            SendMessageA(hwnd,WM_ERASEBKGND,(WPARAM)dc,0);
+            early_erase_painted=pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,10),RGB(0,48,156)) &&
+                pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,200),RGB(90,126,220));
+            ReleaseDC(hwnd,dc);
         }
         if(showing) { observing_first_show=TRUE; deferred_ui_fonts=!body_font && !message_font; }
         result=welcome_proc(hwnd,message,wp,lp);
@@ -182,6 +205,9 @@ static LRESULT CALLBACK counted_screen(HWND hwnd,UINT message,WPARAM wp,LPARAM l
             synchronous_show_painted=pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,10),RGB(0,48,156)) &&
                 pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,200),RGB(90,126,220));
             ReleaseDC(hwnd,dc);
+            first_frame_copies=0; cache_copy_probe=TRUE;
+            RedrawWindow(hwnd,NULL,NULL,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);
+            cache_copy_probe=FALSE; single_erase_copy=first_frame_copies==1;
         }
         if(IsWindowVisible(hwnd)) ValidateRect(hwnd,NULL);
         return result;
@@ -591,6 +617,9 @@ void session_test_entry(void)
     check(provider && screen && status_view==VIEW_LOGIN && !awaiting_logon && !session_running,
         "a new real provider triggers the next login canvas without exiting the controller");
     check(synchronous_show_painted,"the replacement paints during its synchronous show notification before ShowWindow returns");
+    check(early_erase_painted,"an early background-erase request already displays the prepared image before WM_PAINT");
+    check(early_cover_erase_painted,"the existing wait HWND restores the prepared image before new canvas children are created");
+    check(single_erase_copy,"background erase nested in BeginPaint copies the prepared frame only once");
     check(prepared_behind_cover && deferred_ui_fonts && !bitmap_allocations_during_show,
         "the frame is prepared behind the old cover; UI fonts are deferred and visible show allocates no frame");
     check(!first_frame_dc && !first_frame_bitmap && !first_frame_old,
