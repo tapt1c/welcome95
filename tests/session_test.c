@@ -4,11 +4,14 @@
 static BOOL single_profile_fixture;
 static void fixture_profiles_load(void);
 static int fixture_fonts_load(HINSTANCE module);
+static HBITMAP WINAPI fixture_create_bitmap(HDC device,int width,int height);
 #define bundled_fonts_load fixture_fonts_load
 #define profiles_load fixture_profiles_load
 static BOOL WINAPI session_set_event(HANDLE event);
 #define SetEvent session_set_event
+#define CreateCompatibleBitmap fixture_create_bitmap
 #include "../src/welcome95.c"
+#undef CreateCompatibleBitmap
 #undef SetEvent
 #undef profiles_load
 #undef bundled_fonts_load
@@ -18,6 +21,9 @@ static int failures,positions,cover_positions,cover_paints;
 static DWORD canvas_destroyed_at;
 static BOOL consume_creation_damage, visible_during_creation, synchronous_show_painted;
 static DWORD premature_paints,closed_publications;
+static BOOL observing_first_show,prepared_behind_cover,deferred_ui_fonts;
+static BOOL fail_prepared_frame,prepared_failure_consumed;
+static int bitmap_allocations_during_show;
 static BOOL early_init_probe,profiles_saw_frame,fonts_saw_frame,init_timer_guarded;
 static HDC wait_snapshot;
 static HBITMAP wait_frame;
@@ -25,6 +31,17 @@ static HGDIOBJ wait_old;
 static BOOL wait_background_matches;
 static char wait_difference[180];
 static BOOL compare_wait_background(HWND window);
+static HBITMAP WINAPI fixture_create_bitmap(HDC device,int width,int height)
+{
+    if(fail_prepared_frame && preparing_canvas && !screen) {
+        fail_prepared_frame=FALSE; prepared_failure_consumed=TRUE;
+        return NULL;
+    }
+    if(observing_first_show) ++bitmap_allocations_during_show;
+    if(consume_creation_damage && preparing_canvas && !screen && controller_cover && IsWindowVisible(controller))
+        prepared_behind_cover=TRUE;
+    return CreateCompatibleBitmap(device,width,height);
+}
 static BOOL WINAPI session_set_event(HANDLE event)
 {
     if(event && event==closed_event) ++closed_publications;
@@ -157,9 +174,11 @@ static LRESULT CALLBACK counted_screen(HWND hwnd,UINT message,WPARAM wp,LPARAM l
             HDC dc=GetDC(hwnd); RECT area; HBRUSH brush=CreateSolidBrush(RGB(0,128,128));
             GetClientRect(hwnd,&area); FillRect(dc,&area,brush); DeleteObject(brush); ReleaseDC(hwnd,dc);
         }
+        if(showing) { observing_first_show=TRUE; deferred_ui_fonts=!body_font && !message_font; }
         result=welcome_proc(hwnd,message,wp,lp);
         if(showing) {
             HDC dc=GetDC(hwnd);
+            observing_first_show=FALSE;
             synchronous_show_painted=pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,10),RGB(0,48,156)) &&
                 pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,200),RGB(90,126,220));
             ReleaseDC(hwnd,dc);
@@ -561,6 +580,7 @@ void session_test_entry(void)
     competitor=CreateWindowA("Welcome95.WhiteInput","Teardown background",WS_POPUP|WS_VISIBLE,
         0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),NULL,NULL,instance,NULL);
     UpdateWindow(competitor);
+    prepared_behind_cover=FALSE; bitmap_allocations_during_show=0;
     consume_creation_damage=TRUE; visible_during_creation=FALSE; synchronous_show_painted=FALSE; premature_paints=0;
     provider_worker=worker("/provider"); provider=NULL; start=GetTickCount();
     while((!provider || !IsWindowVisible(provider)) && (DWORD)(GetTickCount()-start)<5000) {
@@ -571,6 +591,10 @@ void session_test_entry(void)
     check(provider && screen && status_view==VIEW_LOGIN && !awaiting_logon && !session_running,
         "a new real provider triggers the next login canvas without exiting the controller");
     check(synchronous_show_painted,"the replacement paints during its synchronous show notification before ShowWindow returns");
+    check(prepared_behind_cover && deferred_ui_fonts && !bitmap_allocations_during_show,
+        "the frame is prepared behind the old cover; UI fonts are deferred and visible show allocates no frame");
+    check(!first_frame_dc && !first_frame_bitmap && !first_frame_old,
+        "temporary first-frame GDI resources are released immediately after presentation");
     check(!controller_cover && !IsWindowVisible(controller),"the waiting cover is hidden only after the replacement canvas is fully presented");
     check(wait_background_matches,wait_background_matches ? "Please wait and the first Windows starting frame have identical background, borders and logo pixels" : wait_difference);
     pump(30);
@@ -608,10 +632,17 @@ void session_test_entry(void)
         "retiring a visible canvas never briefly publishes a shell handoff acknowledgement");
     check(IsWindow(controller) && !screen && awaiting_logon && !body_font,
         "ambiguous session end keeps the controller and releases temporary font resources");
+    fail_prepared_frame=TRUE; prepared_failure_consumed=FALSE;
     startup_worker=worker("/gate-startup"); start=GetTickCount();
     while(!screen && (DWORD)(GetTickCount()-start)<5000) pump(10);
     if(screen) KillTimer(screen,TICK);
     check(screen && IsWindow(screen) && !awaiting_logon,"a new OS startup gate also restores welcome after a reasonless session end");
+    dc=screen ? GetDC(screen) : NULL;
+    check(prepared_failure_consumed && !first_frame_dc && !first_frame_bitmap && dc &&
+        pixel_near(GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,10),RGB(0,48,156)) &&
+        WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
+        "failed frame preparation falls back to a painted canvas without premature startup release");
+    if(dc) ReleaseDC(screen,dc);
     check(require_account_choice && automatic_attempted && !account_open() && status_view==VIEW_LOGIN,
         "the ready-event fallback after an ambiguous session end cannot rearm automatic login");
     check(WaitForSingleObject(startup_worker,0)==WAIT_TIMEOUT && WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,

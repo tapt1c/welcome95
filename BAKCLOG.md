@@ -843,3 +843,41 @@ whitespace audits pass. Rebuilt EXE is included.
 - [ ] Retest this newer build's wait/start transition in Win95/86Box. These
       stronger fixtures model two gaps; they do not prove the exact cause or
       absence of the recorded physical gap on the target OS.
+
+
+## 2026-11-05: target stage log and first-frame preparation before show
+
+The next 86Box video still contains 11 teal frames (~0.18s, 8.567-8.750s).
+The supplied W95START.LOG keeps one controller PID across several cycles and
+records create-start -> show-painted/presented intervals of 68, 63 and 62ms.
+No cover-*-held records occur in the supplied fragment. This narrows the evidence
+but does not prove that Win95 never hid/overpainted the cover via another path.
+The exact physical gap is still not mapped to an instrumented window operation.
+
+Code inspection and a failing regression show that a full compatible bitmap was
+still allocated/composed during visible ShowWindow, even after synchronous-show
+painting was introduced. Prepare the whole VIEW_STARTING image before creating
+its popup, while the old cover remains visible. Render with two local status
+fonts, deleting them after preparation; defer full UI-font creation until after
+first presentation. Visible initial painting copies the ready bitmap instead
+of allocating/composing another frame. Normal starting rendering uses the same
+composition helper. Existing show-time paint, fallback and all auth gates remain.
+
+Release the temporary DC/bitmap immediately after show or window-creation failure.
+Check frame dimensions before copying, and use normal rendering if allocation,
+font preparation or copy fails. Add frame-start/frame-ready and show-start tags
+to distinguish preparation, construction and presentation in future target logs.
+No account text, credential data or uploaded video/log files are published.
+
+Validation: the new timing regression first failed on 7aac53c. All 541 checks
+pass per Wine64/Xvfb mode at 640x480x16, 800x600x24 and 1024x768x24 (96 session,
+64 startup, 64 power, 47 CPL). Verify allocation behind the still-visible cover,
+no frame allocation in visible show, deferred full UI fonts, unchanged actual
+frame pixels, immediate GDI cleanup, and injected allocation-failure fallback
+without early CanvasClosed. Existing native input/rescue/logoff cases remain.
+Main/boot/CPL audits pass at unchanged 177/70/15 reviewed imports, x86/Windows 4.0,
+no CRT/TLS; rebuilt tracked EXE included.
+
+- [ ] Run this prepared-frame build on Win95/86Box and compare physical transition
+      plus frame-ready/show-start/show-painted timings. Wine does not establish
+      that the recorded 11-frame gap has disappeared on the target system.

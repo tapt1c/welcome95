@@ -76,6 +76,10 @@ static char system_ini[MAX_PATH],control_ini[MAX_PATH],boot_directory[MAX_PATH];
 static BOOL rescue_mode;
 static BOOL preview, finishing, preparing_canvas, power_pending, controller_cover;
 static BOOL cover_repair_pending,repairing_cover,canvas_show_painted;
+static HDC first_frame_dc;
+static HBITMAP first_frame_bitmap;
+static HGDIOBJ first_frame_old;
+static int first_frame_width,first_frame_height;
 static DWORD finish_time;
 static HWND login_window;
 static BOOL login_was_topmost;
@@ -499,6 +503,56 @@ static void paint_status_message(HDC dc, const char *text)
     SetRect(&area,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN));
     paint_status_panel(dc,&area,body_font,message_font,text);
 }
+static const char *starting_text(void)
+{
+    return ui_text("\307\340\357\363\361\352 Windows...","Windows is starting up...");
+}
+static void paint_starting_frame(HDC dc,const RECT *area,HFONT logo_font,HFONT text_font)
+{
+    early_cover_background(dc,area);
+    paint_background_artwork(dc,area,VIEW_STARTING);
+    SetBkMode(dc,TRANSPARENT); SetTextColor(dc,RGB(255,255,255));
+    paint_status_panel(dc,area,logo_font,text_font,starting_text());
+}
+static void release_first_frame(void)
+{
+    if(first_frame_old) SelectObject(first_frame_dc,first_frame_old);
+    if(first_frame_bitmap) DeleteObject(first_frame_bitmap);
+    if(first_frame_dc) DeleteDC(first_frame_dc);
+    first_frame_old=NULL; first_frame_bitmap=NULL; first_frame_dc=NULL;
+    first_frame_width=first_frame_height=0;
+}
+static BOOL prepare_first_frame(void)
+{
+    HDC device;
+    RECT area;
+    HFONT logo_font=body_font,text_font=message_font,temporary_logo=NULL,temporary_text=NULL;
+    release_first_frame();
+    first_frame_width=GetSystemMetrics(SM_CXSCREEN); first_frame_height=GetSystemMetrics(SM_CYSCREEN);
+    device=GetDC(NULL);
+    if(device) {
+        first_frame_dc=CreateCompatibleDC(device);
+        if(first_frame_dc) first_frame_bitmap=CreateCompatibleBitmap(device,first_frame_width,first_frame_height);
+        ReleaseDC(NULL,device);
+    }
+    if(first_frame_bitmap) {
+        first_frame_old=SelectObject(first_frame_dc,first_frame_bitmap);
+        if(first_frame_old==HGDI_ERROR) first_frame_old=NULL;
+    }
+    if(!first_frame_old) { release_first_frame(); return FALSE; }
+    /* Only two temporary status fonts are needed before showing the first
+       image. Full UI font creation and profile/TTF work follow presentation. */
+    if(!logo_font) logo_font=temporary_logo=CreateFontA(-20,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Arial");
+    if(!text_font) text_font=temporary_text=CreateFontA(-font_pixels(14),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Arial");
+    SetRect(&area,0,0,first_frame_width,first_frame_height);
+    if(logo_font && text_font) paint_starting_frame(first_frame_dc,&area,logo_font,text_font);
+    if(temporary_logo) DeleteObject(temporary_logo);
+    if(temporary_text) DeleteObject(temporary_text);
+    if(!logo_font || !text_font) { release_first_frame(); return FALSE; }
+    return TRUE;
+}
 static void login_hotkeys(HWND hwnd,BOOL enable);
 static void set_status_view(HWND hwnd, int view)
 {
@@ -574,10 +628,21 @@ static void paint_welcome(HWND hwnd)
     int index, top;
     BeginPaint(hwnd,&paint); dc=paint.hdc;
     GetClientRect(hwnd,&area);
+    if(first_frame_dc && preparing_canvas && status_view==VIEW_STARTING &&
+       area.right==first_frame_width && area.bottom==first_frame_height &&
+       BitBlt(dc,0,0,area.right,area.bottom,first_frame_dc,0,0,SRCCOPY)) {
+        EndPaint(hwnd,&paint); return;
+    }
+    /* Allocation or display changes may invalidate the prepared image. */
+    if(preparing_canvas && status_view==VIEW_STARTING && !body_font) create_ui_fonts();
     memory=CreateCompatibleDC(dc);
     frame=memory ? CreateCompatibleBitmap(dc,area.right,area.bottom) : NULL;
     if(frame) { old=SelectObject(memory,frame); dc=memory; }
     else if(memory) DeleteDC(memory);
+    if(status_view==VIEW_STARTING) {
+        paint_starting_frame(dc,&area,body_font,message_font);
+        finish_paint(hwnd,&paint,dc,frame,old); return;
+    }
     early_cover_background(dc,&area);
     paint_background_artwork(dc,&area,status_view);
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255,255,255));
@@ -596,10 +661,6 @@ static void paint_welcome(HWND hwnd)
         SetRect(&rectangle, card_x(499), loading_y(285), card_x(775), loading_y(320));
         SetTextColor(dc, RGB(0,48,156));
         label(dc, status_font, russian_ui() ? "\307\340\343\360\363\347\352\340\040\353\350\367\355\373\365\040\357\340\360\340\354\345\362\360\356\342\056\056\056" : "Loading your personal settings...", rectangle, DT_LEFT | DT_WORDBREAK);
-        finish_paint(hwnd,&paint,dc,frame,old); return;
-    }
-    if(status_view==VIEW_STARTING) {
-        paint_status_message(dc,ui_text("\307\340\357\363\361\352 Windows...","Windows is starting up..."));
         finish_paint(hwnd,&paint,dc,frame,old); return;
     }
     if (status_view == VIEW_SHUTDOWN) {
@@ -1113,15 +1174,25 @@ static LRESULT CALLBACK welcome_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
 static HWND create_canvas(void)
 {
     canvas_show_painted=FALSE;
+    release_first_frame();
+    if(preparing_canvas && status_view==VIEW_STARTING) {
+        BOOL prepared;
+        startup_trace(startup_config.root,startup_config.backup_key,"canvas-frame-start",0);
+        prepared=prepare_first_frame();
+        startup_trace(startup_config.root,startup_config.backup_key,"canvas-frame-ready",prepared ? 0 : ERROR_NOT_ENOUGH_MEMORY);
+        if(!prepared && !body_font) create_ui_fonts();
+    }
     startup_trace(startup_config.root,startup_config.backup_key,"canvas-create-start",0);
     screen=CreateWindowExA(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,"Welcome95.Screen",APP,
         WS_POPUP|WS_CLIPCHILDREN,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
         NULL,NULL,instance,NULL);
     if(screen) {
+        startup_trace(startup_config.root,startup_config.backup_key,"canvas-show-start",0);
         ShowWindow(screen,SW_SHOWNOACTIVATE);
         if(!canvas_show_painted) RedrawWindow(screen,NULL,NULL,RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW);
         startup_trace(startup_config.root,startup_config.backup_key,"canvas-presented",0);
     }
+    release_first_frame();
     return screen;
 }
 
@@ -1209,13 +1280,13 @@ static void begin_logon_cycle(BOOL reset)
        discovery and TTF extraction/registration must not delay the first frame. */
     {
         BOOL load_fonts=!body_font;
-        if(load_fonts) create_ui_fonts();
         if(!create_canvas()) {
             preparing_canvas=FALSE; hide_controller_cover();
             if(stop_event) SetEvent(stop_event);
             if(closed_event) SetEvent(closed_event);
             return;
         }
+        if(load_fonts && !body_font) create_ui_fonts();
         profiles_load();
         if(load_fonts && bundled_fonts_load(instance)>0) {
             release_ui_font_handles(); create_ui_fonts();

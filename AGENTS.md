@@ -373,3 +373,14 @@ retain fallback painting and avoid duplicating an already completed first frame.
 Keep regressions for immediate hide/demotion, generic close vs explicit Stop,
 and a teal/damage-injected synchronous show callback. Stage logs remain fixed
 numeric tags without user contents. Target video evidence is distinct from Wine.
+
+
+Prepare the first VIEW_STARTING bitmap before creating/showing its popup, while
+any old wait cover remains visible. The first visible paint should only copy the
+prepared frame; defer full UI-font creation until afterward. Temporary status
+fonts are local to preparation and must be deleted before presentation. Release
+the frame DC/bitmap immediately after show, including allocation/window failures.
+Keep dimension checks and normal rendering fallback without readiness/closure
+signals. Preserve tests for allocation outside visible show, unchanged real frame
+pixels, deferred fonts, cleanup and an injected allocation failure. Do not infer
+a Win95 root cause solely from absent cover-*-held records.
