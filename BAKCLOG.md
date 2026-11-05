@@ -768,3 +768,41 @@ PE audits pass with 177/70/15 reviewed imports; all embedded icon frames and
 - [ ] Publish the GitHub Release page/assets for v1.0 once the environment permits
       api.github.com and uploads.github.com. Read-only GitHub API checks currently
       return Forbidden; Git access works. A pushed tag alone is not a Release page.
+
+
+## 2026-11-05: continuous Please wait / Windows starting presentation
+
+The supplied 86Box video shows the flat wait background changing to the main
+canvas glow/borders and a brief teal desktop between phases (around 43.75s).
+Do not attribute the exact Win95 hiding sequence to a GDI race without target
+instrumentation. Regressions against the previous implementation reproduced
+three concrete defects: no repair after external hide, stale cover geometry
+after a display-change notification, and different displayed background pixels.
+
+Share the base background renderer between the early cover and main canvas,
+and share main artwork/status-panel layout with the resident wait cover. Wait
+now includes the same glow and band borders; its logo anchors to the actual
+client rectangle during display resets. Temporary cover fonts remain local to
+painting and are not held across session resource teardown.
+
+Coalesced posted repair restores only our active cover after unexpected hiding
+or geometry changes. A reentrancy guard prevents repair loops; a timer validates
+unchanged state without mutations. Clear the cover flag before deliberate hide
+and ignore stale posted work after handoff/rescue. Genuine OS-ready, one-second
+Welcome, shell-behind-canvas launch and post-destruction startup acknowledgement
+remain unchanged. No new credential canvas during teardown or password access.
+
+Validation: 533 Wine64/Xvfb checks per mode at 640x480x16, 800x600x24 and
+1024x768x24, including 88 session, 64 startup, 64 power and 47 CPL checks. Actual
+wait pixels are captured before replacement and compared with the first startup
+frame, excluding changing status text. Capture both frames to the same display
+format: the first VGA check exposed RGB565 rounding between a saved 16-bit bitmap
+and Wine's higher-depth window DC (green 49 vs 48), not different source painting.
+Exact comparison passes after making the capture formats equal, without a larger
+tolerance. External hide/resize, stale repair after handoff, and 100 idle ticks
+without positioning/paint are covered. Main/boot/CPL PE audits pass with unchanged
+177/70/15 imports and helper/resource checks. Rebuilt tracked EXE included.
+
+- [ ] Repeat logoff -> Please wait -> account choice on Win95/86Box, including
+      profile display resets. Cloud windows do not establish physical frame timing
+      or the exact OS operation behind the video's desktop exposure.

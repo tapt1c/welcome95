@@ -347,3 +347,17 @@ canvas is presented, and dismiss it for native rescue or frontend failure.
 Queue power opening after BUTTON click processing returns, and keep a normal
 arrow on our own UI surfaces. Do not override the foreign native Edit's caret
 or pointer, and do not apply system-wide cursor changes.
+
+
+## Wait-to-startup continuity
+
+The persistent wait cover and VIEW_STARTING share background/artwork/status-panel
+layout, including glow and band edges. Anchor the wait panel to its actual client
+rectangle while a display reset is in progress. Keep temporary paint fonts scoped
+to WM_PAINT; do not retain them or allocate a credential canvas during teardown.
+Unexpected hide/geometry changes queue a coalesced, guarded cover repair, with a
+mutation-free timer backstop. Clear the cover flag before intentional hide so
+stale queued repairs cannot resurrect it after handoff or native rescue. Preserve
+actual displayed-frame pixel comparison, external-hide/display-reset regressions
+and 100 idle ticks without positioning/repaint. No cover repair signals readiness
+or changes shell/startup gates.

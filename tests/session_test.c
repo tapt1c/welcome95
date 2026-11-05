@@ -14,11 +14,17 @@ static BOOL WINAPI session_set_event(HANDLE event);
 #undef bundled_fonts_load
 #include "../src/bootstrap.h"
 static HANDLE output;
-static int failures,positions;
+static int failures,positions,cover_positions,cover_paints;
 static DWORD canvas_destroyed_at;
 static BOOL consume_creation_damage, visible_during_creation;
 static DWORD premature_paints,closed_publications;
 static BOOL early_init_probe,profiles_saw_frame,fonts_saw_frame,init_timer_guarded;
+static HDC wait_snapshot;
+static HBITMAP wait_frame;
+static HGDIOBJ wait_old;
+static BOOL wait_background_matches;
+static char wait_difference[180];
+static BOOL compare_wait_background(HWND window);
 static BOOL WINAPI session_set_event(HANDLE event)
 {
     if(event && event==closed_event) ++closed_publications;
@@ -48,6 +54,7 @@ static const BYTE test_boot[32]={'M','Z',1,2,3};
 static char service_key[160],run_key[160],once_key[160],backup_key[160],marker[MAX_PATH];
 static void fixture_profiles_load(void)
 {
+    if(wait_snapshot) wait_background_matches=compare_wait_background(screen);
     if(early_init_probe) {
         HDC dc=screen ? GetDC(screen) : NULL;
         COLORREF pixel=dc ? GetPixel(dc,GetSystemMetrics(SM_CXSCREEN)-10,200) : CLR_INVALID;
@@ -89,6 +96,38 @@ static BOOL pixel_near(COLORREF actual,COLORREF expected)
         if(difference < -8 || difference > 8) return FALSE;
     }
     return TRUE;
+}
+/* Compare actual displayed frames, preserving the old frame before replacement.
+   Status text may change; the background, borders and logo must not jump. */
+static BOOL compare_wait_background(HWND window)
+{
+    HDC device=GetDC(window),dc=device ? CreateCompatibleDC(device) : NULL;
+    int x,y,width=GetSystemMetrics(SM_CXSCREEN),height=GetSystemMetrics(SM_CYSCREEN);
+    HBITMAP frame=device ? CreateCompatibleBitmap(device,width,height) : NULL;
+    HGDIOBJ old=NULL;
+    BOOL matches=dc && frame;
+    /* Capture both frames in the same display format. Wine may expose a 24-bit
+       window DC even on RGB565; comparing it directly to a saved 16-bit bitmap
+       otherwise reports conversion rounding as a visible transition. */
+    if(matches) {
+        old=SelectObject(dc,frame);
+        matches=BitBlt(dc,0,0,width,height,device,0,0,SRCCOPY);
+    }
+    for(y=0;matches && y<height;y+=4) for(x=0;x<width;x+=8) {
+        if(y>=cy(334) && y<cy(385) && x>=cx(208) && x<cx(552)) continue;
+        if(GetPixel(dc,x,y)!=GetPixel(wait_snapshot,x,y)) {
+            wsprintfA(wait_difference,"wait/start frame mismatch at %d,%d: before=%lu after=%lu",x,y,
+                (DWORD)GetPixel(wait_snapshot,x,y),(DWORD)GetPixel(dc,x,y));
+            matches=FALSE; break;
+        }
+    }
+    if(old) SelectObject(dc,old);
+    if(frame) DeleteObject(frame);
+    if(dc) DeleteDC(dc);
+    if(device) ReleaseDC(window,device);
+    SelectObject(wait_snapshot,wait_old); DeleteObject(wait_frame); DeleteDC(wait_snapshot);
+    wait_snapshot=NULL;
+    return matches;
 }
 static void pump(DWORD milliseconds)
 {
@@ -203,13 +242,19 @@ static INT_PTR CALLBACK notice_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
 {
     (void)hwnd; (void)message; (void)wp; (void)lp; return FALSE;
 }
+static LRESULT CALLBACK counted_controller(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
+{
+    if(controller_cover && message==WM_WINDOWPOSCHANGING) ++cover_positions;
+    if(controller_cover && message==WM_PAINT) ++cover_paints;
+    return monitor_proc(hwnd,message,wp,lp);
+}
 static void register_windows(void)
 {
     WNDCLASSA cls;
     zero_memory(&cls,sizeof(cls)); cls.hInstance=instance; cls.hCursor=LoadCursor(NULL,IDC_ARROW);
     cls.lpfnWndProc=counted_screen; cls.lpszClassName="Welcome95.Screen"; RegisterClassA(&cls);
     cls.lpfnWndProc=white_input; cls.lpszClassName="Welcome95.WhiteInput"; RegisterClassA(&cls);
-    cls.lpfnWndProc=monitor_proc; cls.lpszClassName="Welcome95.Controller"; RegisterClassA(&cls);
+    cls.lpfnWndProc=counted_controller; cls.lpszClassName="Welcome95.Controller"; RegisterClassA(&cls);
 }
 static void remove_fixture(const char *directory)
 {
@@ -470,7 +515,28 @@ void session_test_entry(void)
     check(controller_cover && IsWindowVisible(controller) && GetWindow(controller,GW_CHILD)==NULL,
         "logoff keeps a complete visual cover in the existing service window without creating credential controls");
 
-    for(i=0;i<5;++i) SendMessageA(controller,WM_TIMER,TICK,0);
+    ShowWindow(controller,SW_HIDE); pump(30);
+    check(controller_cover && IsWindowVisible(controller),
+        "an externally hidden wait cover is restored promptly without waiting for a new provider");
+    ShowWindow(controller,SW_SHOWNOACTIVATE); /* Keep the remainder diagnostic on old builds too. */
+    SetWindowPos(controller,NULL,12,16,160,120,SWP_NOZORDER|SWP_NOACTIVATE);
+    SendMessageA(controller,WM_DISPLAYCHANGE,0,0); pump(30);
+    {
+        RECT bounds; GetWindowRect(controller,&bounds);
+        check(bounds.left==0 && bounds.top==0 && bounds.right==GetSystemMetrics(SM_CXSCREEN) &&
+            bounds.bottom==GetSystemMetrics(SM_CYSCREEN),
+            "the waiting cover repairs screen geometry before repainting after display changes");
+    }
+    SetWindowPos(controller,HWND_TOPMOST,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),SWP_NOACTIVATE);
+    RedrawWindow(controller,NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
+    dc=GetDC(controller); wait_snapshot=CreateCompatibleDC(dc);
+    wait_frame=CreateCompatibleBitmap(dc,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN));
+    wait_old=SelectObject(wait_snapshot,wait_frame);
+    BitBlt(wait_snapshot,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),dc,0,0,SRCCOPY);
+    ReleaseDC(controller,dc);
+    cover_positions=cover_paints=0;
+    for(i=0;i<100;++i) SendMessageA(controller,WM_TIMER,TICK,0);
+    check(!cover_positions && !cover_paints,"100 stable wait-cover ticks cause no positioning or repaint churn");
     check(!screen && awaiting_logon && closed_publications==publications_before &&
         WaitForSingleObject(closed_event,0)==WAIT_TIMEOUT,
         "without a new provider or OS handshake logoff stays idle and never publishes a close acknowledgement");
@@ -482,10 +548,14 @@ void session_test_entry(void)
     while((!provider || !IsWindowVisible(provider)) && (DWORD)(GetTickCount()-start)<5000) {
         pump(10); provider=FindWindowA("#32770","Welcome95 synthetic provider");
     }
+    PostMessageA(controller,REPAIR_COVER,0,0); /* Delayed work from the old wait phase. */
     SendMessageA(controller,WM_TIMER,TICK,0); if(screen) KillTimer(screen,TICK);
     check(provider && screen && status_view==VIEW_LOGIN && !awaiting_logon && !session_running,
         "a new real provider triggers the next login canvas without exiting the controller");
     check(!controller_cover && !IsWindowVisible(controller),"the waiting cover is hidden only after the replacement canvas is fully presented");
+    check(wait_background_matches,wait_background_matches ? "Please wait and the first Windows starting frame have identical background, borders and logo pixels" : wait_difference);
+    pump(30);
+    check(!controller_cover && !IsWindowVisible(controller),"queued cover repairs cannot resurrect it after a completed canvas handoff");
 
     check(!visible_during_creation && !premature_paints && IsWindowVisible(screen),
         "canvas construction stays hidden and first visible painting has its published window handle");

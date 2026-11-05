@@ -24,6 +24,7 @@
 #define ENDED_EVENT "Welcome95.SessionEnded"
 #define CONTROLLER_EVENT BOOTSTRAP_READY_EVENT
 #define SHOW_POWER (WM_USER+72)
+#define REPAIR_COVER (WM_USER+73)
 #define SHELL_STARTED (WM_USER+70)
 #define SESSION_STARTING (WM_USER+71)
 #define ENDSESSION_LOGOFF_95 0x80000000UL
@@ -74,6 +75,7 @@ static PanelConfig panel_config;
 static char system_ini[MAX_PATH],control_ini[MAX_PATH],boot_directory[MAX_PATH];
 static BOOL rescue_mode;
 static BOOL preview, finishing, preparing_canvas, power_pending, controller_cover;
+static BOOL cover_repair_pending,repairing_cover;
 static DWORD finish_time;
 static HWND login_window;
 static BOOL login_was_topmost;
@@ -458,27 +460,44 @@ static void paint_logo_with_font(HDC dc, int x, int y, HFONT font)
     SetTextColor(dc, RGB(255,255,255));
 }
 static void paint_logo_at(HDC dc,int x,int y) { paint_logo_with_font(dc,x,y,body_font); }
+static void paint_background_artwork(HDC dc,const RECT *area,int view)
+{
+    if(!compact_layout() || view==VIEW_STARTING || view==VIEW_SHUTDOWN)
+        bitmap(dc,100,0,78,219,207);
+    bitmap(dc,125,0,78,area->right,2);
+    if(view==VIEW_STARTING || view==VIEW_SHUTDOWN)
+        bitmap(dc,126,0,area->bottom-96,area->right,2);
+    else if(view!=VIEW_WELCOME_SINGLE && !compact_layout())
+        bitmap(dc,126,0,area->bottom-96,area->right,3);
+}
+static void paint_status_panel(HDC dc,const RECT *area,HFONT logo_font,HFONT text_font,const char *text)
+{
+    RECT rect;
+    int x=(area->right-800)/2,y=(area->bottom-600)/2;
+    paint_logo_with_font(dc,x+435,y+228,logo_font);
+    SetRect(&rect,x+208,y+334,x+552,y+385);
+    label(dc,text_font,text,rect,DT_RIGHT|DT_SINGLELINE);
+}
 static void paint_wait_details(HDC dc)
 {
     HFONT logo_font=CreateFontA(-20,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Arial");
     HFONT text_font=CreateFontA(-font_pixels(14),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,DEFAULT_PITCH,"Arial");
-    RECT rect;
+    RECT area;
+    GetClientRect(controller,&area);
+    paint_background_artwork(dc,&area,VIEW_STARTING);
     SetBkMode(dc,TRANSPARENT); SetTextColor(dc,RGB(255,255,255));
-    paint_logo_with_font(dc,cx(435),cy(228),logo_font);
-    SetRect(&rect,cx(208),cy(334),cx(552),cy(385));
-    label(dc,text_font,ui_text("\317\356\344\356\346\344\350\362\345...","Please wait..."),rect,DT_RIGHT|DT_SINGLELINE);
+    paint_status_panel(dc,&area,logo_font,text_font,ui_text("\317\356\344\356\346\344\350\362\345...","Please wait..."));
     DeleteObject(logo_font); DeleteObject(text_font);
 }
 static void paint_status_message(HDC dc, const char *text)
 {
-    RECT rectangle;
+    RECT area;
     /* XP UIFILE: centered 384px panel, product right padding 20px,
        help right padding 40px. VGA bitmap (355,168), text right edge 472. */
-    paint_logo_at(dc,cx(435),cy(228));
-    SetRect(&rectangle,cx(208),cy(334),cx(552),cy(385));
-    label(dc,message_font,text,rectangle,DT_RIGHT|DT_SINGLELINE);
+    SetRect(&area,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN));
+    paint_status_panel(dc,&area,body_font,message_font,text);
 }
 static void login_hotkeys(HWND hwnd,BOOL enable);
 static void set_status_view(HWND hwnd, int view)
@@ -552,27 +571,15 @@ static void paint_welcome(HWND hwnd)
     HDC dc, memory;
     HBITMAP frame;
     HGDIOBJ old=NULL;
-    int band, index, top;
+    int index, top;
     BeginPaint(hwnd,&paint); dc=paint.hdc;
     GetClientRect(hwnd,&area);
     memory=CreateCompatibleDC(dc);
     frame=memory ? CreateCompatibleBitmap(dc,area.right,area.bottom) : NULL;
     if(frame) { old=SelectObject(memory,frame); dc=memory; }
     else if(memory) DeleteDC(memory);
-    fill(dc, area, RGB(90,126,220));
-    if(!compact_layout() || status_view==VIEW_STARTING || status_view==VIEW_SHUTDOWN)
-        bitmap(dc,100,0,78,219,207);
-    SetRect(&rectangle, 0, 0, area.right, 78);
-    fill(dc, rectangle, RGB(0,48,156));
-    for (band = 0; band < 128; ++band) {
-        SetRect(&rectangle, area.right*band/128, by(504), area.right*(band+1)/128, area.bottom);
-        fill(dc, rectangle, RGB(57-band*57/127,52-band*4/127,173-band*17/127));
-    }
-    bitmap(dc, 125, 0, 78, area.right, 2);
-    if(status_view==VIEW_STARTING || status_view==VIEW_SHUTDOWN)
-        bitmap(dc,126,0,by(504),area.right,2);
-    else if(status_view!=VIEW_WELCOME_SINGLE && !compact_layout())
-        bitmap(dc,126,0,by(504),area.right,3);
+    early_cover_background(dc,&area);
+    paint_background_artwork(dc,&area,status_view);
     SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255,255,255));
     if (status_view == VIEW_WELCOME_SINGLE) {
         paint_greeting(dc, 100, 800); finish_paint(hwnd,&paint,dc,frame,old); return;
@@ -1106,26 +1113,45 @@ static HWND create_canvas(void)
 
 /* Reuse the service's existing window across teardown, without creating a new
    credential canvas or retaining session font/control handles in the cover. */
+static void maintain_controller_cover(HWND window)
+{
+    RECT bounds;
+    LONG style,extended;
+    int width=GetSystemMetrics(SM_CXSCREEN),height=GetSystemMetrics(SM_CYSCREEN);
+    if(!controller_cover || repairing_cover || !window || !IsWindow(window)) return;
+    style=GetWindowLongA(window,GWL_STYLE); extended=GetWindowLongA(window,GWL_EXSTYLE);
+    GetWindowRect(window,&bounds);
+    if(IsWindowVisible(window) && (style&WS_POPUP) && (extended&WS_EX_TOPMOST) && (extended&WS_EX_TOOLWINDOW) &&
+       bounds.left==0 && bounds.top==0 && bounds.right==width && bounds.bottom==height) return;
+    repairing_cover=TRUE;
+    if(!(style&WS_POPUP)) SetWindowLongA(window,GWL_STYLE,WS_POPUP|(style&WS_VISIBLE));
+    if(!(extended&WS_EX_TOOLWINDOW)) SetWindowLongA(window,GWL_EXSTYLE,extended|WS_EX_TOOLWINDOW);
+    SetWindowPos(window,HWND_TOPMOST,0,0,width,height,SWP_NOACTIVATE|SWP_SHOWWINDOW);
+    RedrawWindow(window,NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
+    repairing_cover=FALSE;
+}
+static void queue_cover_repair(HWND window)
+{
+    if(controller_cover && !repairing_cover && !cover_repair_pending)
+        cover_repair_pending=PostMessageA(window,REPAIR_COVER,0,0);
+}
 static void show_controller_cover(HWND window)
 {
-    if(controller_cover || !window || !IsWindow(window)) return;
+    if(!window || !IsWindow(window)) return;
     controller_cover=TRUE;
-    SetWindowLongA(window,GWL_STYLE,WS_POPUP);
-    SetWindowLongA(window,GWL_EXSTYLE,WS_EX_TOOLWINDOW);
-    SetWindowPos(window,HWND_TOPMOST,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),
-        SWP_NOACTIVATE|SWP_SHOWWINDOW);
-    RedrawWindow(window,NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
+    maintain_controller_cover(window);
 }
 static void hide_controller_cover(void)
 {
     if(!controller_cover) return;
+    /* Disable repairs before our deliberate hide; stale posted work is inert. */
+    controller_cover=FALSE; cover_repair_pending=FALSE;
     if(controller && IsWindow(controller)) {
         ShowWindow(controller,SW_HIDE);
         SetWindowLongA(controller,GWL_STYLE,WS_OVERLAPPED);
         SetWindowLongA(controller,GWL_EXSTYLE,0);
         SetWindowPos(controller,HWND_NOTOPMOST,0,0,0,0,SWP_NOACTIVATE);
     }
-    controller_cover=FALSE;
 }
 
 /* A committed end notification precedes completion of Win9x desktop teardown.
@@ -1223,6 +1249,23 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     case WM_SETCURSOR:
         if(controller_cover && LOWORD(lp)==HTCLIENT) { SetCursor(LoadCursor(NULL,IDC_ARROW)); return TRUE; }
         break;
+    case REPAIR_COVER:
+        cover_repair_pending=FALSE;
+        maintain_controller_cover(hwnd);
+        return 0;
+    case WM_SHOWWINDOW:
+        if(!wp) queue_cover_repair(hwnd);
+        break;
+    case WM_WINDOWPOSCHANGED:
+        queue_cover_repair(hwnd);
+        break;
+    case WM_DISPLAYCHANGE:
+        if(controller_cover) {
+            maintain_controller_cover(hwnd);
+            RedrawWindow(hwnd,NULL,NULL,RDW_INVALIDATE|RDW_UPDATENOW);
+            return 0;
+        }
+        break;
     case WM_CREATE:
         SetTimer(hwnd,TICK,resident_mode ? 100 : 250,NULL);
         if(resident_mode) RegisterHotKey(hwnd,ID_RESCUE_HOTKEY,MOD_CONTROL|MOD_ALT|MOD_SHIFT,'L');
@@ -1274,6 +1317,7 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
             close_canvas(); DestroyWindow(hwnd); return 0;
         }
         if(resident_mode) {
+            if(controller_cover) maintain_controller_cover(hwnd);
             if(WaitForSingleObject(logoff_event,0)==WAIT_OBJECT_0) {
                 require_account_choice=TRUE;
                 ResetEvent(logoff_event);
@@ -1300,7 +1344,7 @@ static LRESULT CALLBACK monitor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         }
         return 0;
     case WM_DESTROY:
-        controller_cover=FALSE;
+        controller_cover=cover_repair_pending=FALSE;
         if(resident_mode) UnregisterHotKey(hwnd,ID_RESCUE_HOTKEY);
         KillTimer(hwnd,TICK); PostQuitMessage(0); return 0;
     }
